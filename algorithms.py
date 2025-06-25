@@ -56,83 +56,108 @@ def is_valid_position(pos: Tuple[float, float], vehicle_rect: List[Tuple[float, 
             return False
     return True
 
-def a_star_path_planning(input_dict: Dict) -> List[Tuple[int, int]]:
+def a_star_path_planning(input_dict: Dict, current_vehicle_index: int, max_iter: int = 10000) -> List[Tuple[int, int]]:
     """
     A* path planning algorithm to navigate from a vehicle to a destination, avoiding obstacles.
     
     Args:
         input_dict: A dictionary containing:
-            - 'vehicle': List of four corner points (x, y) representing the vehicle's rectangle.
+            - 'all_vehicles': List of four corner points (x, y) representing all vehicles' rectangles.
             - 'obstacle': List of obstacles, each obstacle is a list of four corner points (x, y).
             - 'destination': A tuple (x, y) representing the destination point.
+        - current_vehicle_index: 当前车辆的索引    
     
     Returns:
         A list of (x, y) tuples representing the path from vehicle's center to destination.
     """
+
+    def get_other_vehicles():
+        """获取其他车辆的障碍物"""
+        return [
+            vehicle for i, vehicle in enumerate(input_dict['all_vehicles'])
+            if i != current_vehicle_index
+        ]
     
-    def is_collision(point: Tuple[int, int], buffer: int = 1) -> bool:
-        """Check if a point is inside any obstacle or too close to it."""
-        for obs in input_dict['obstacle']:
+    def is_collision(point: Tuple[float, float], buffer: float = 1.0) -> bool:
+        """检查与静态障碍物和其他车辆的碰撞"""
+        # 合并障碍物
+        all_obstacles = input_dict['obstacle'] + get_other_vehicles()
+        
+        for obs in all_obstacles:
             if point_to_rect_distance(point, obs) < buffer:
                 return True
         return False
-    
-    def heuristic(a: Tuple[int, int], b: Tuple[int, int]) -> float:
-        """Manhattan distance heuristic for A*."""
+
+    def heuristic(a, b):
+        """兼容float的曼哈顿距离"""
         return abs(a[0] - b[0]) + abs(a[1] - b[1])
+
+    # 统一坐标类型
+    current_vehicle = input_dict['all_vehicles'][current_vehicle_index]
+    start = get_rect_center(current_vehicle)
+    goal = (float(input_dict['destination'][0]), float(input_dict['destination'][1]))
     
-    # Get start and goal positions
-    start = get_rect_center(input_dict['vehicle'])
-    goal = input_dict['destination']
-    
-    # Define possible movements (up, down, left, right)
+    # 计算合理边界
+    all_points = []
+    # 添加所有车辆的角点
+    for vehicle in input_dict['all_vehicles']:
+        all_points.extend(vehicle)
+    # 添加目标点
+    all_points.append(goal)
+    # 添加所有障碍物的角点
+    for obs in input_dict['obstacle']:
+        all_points.extend(obs)
+    min_x = min(p[0] for p in all_points) - 5
+    max_x = max(p[0] for p in all_points) + 5
+    min_y = min(p[1] for p in all_points) - 5
+    max_y = max(p[1] for p in all_points) + 5
+
     movements = [(0, 1), (0, -1), (-1, 0), (1, 0)]
-    
-    # Initialize data structures
     open_set = []
     heapq.heappush(open_set, (0, start))
     came_from = {}
     g_score = {start: 0}
     f_score = {start: heuristic(start, goal)}
     closed_set = set()
-    
-    while open_set:
+    iter_count = 0
+
+    while open_set and iter_count < max_iter:
+        iter_count += 1
         current_f, current = heapq.heappop(open_set)
-        
-        if current == goal:
-            # Reconstruct path
+
+        # 浮点数比较需要容差
+        if math.isclose(current[0], goal[0], abs_tol=0.5) and math.isclose(current[1], goal[1], abs_tol=0.5):
             path = [current]
             while current in came_from:
                 current = came_from[current]
                 path.append(current)
-            return path[::-1]  # Reverse to get from start to goal
-        
+            return path[::-1]
+
         closed_set.add(current)
         
         for dx, dy in movements:
             neighbor = (current[0] + dx, current[1] + dy)
             
-            # Skip if out of bounds (we need some bounds, let's assume a large area)
-            if abs(neighbor[0]) > 1000 or abs(neighbor[1]) > 1000:
+            # 更严格的边界检查
+            if not (min_x <= neighbor[0] <= max_x and min_y <= neighbor[1] <= max_y):
                 continue
                 
-            # Skip if in closed set
             if neighbor in closed_set:
                 continue
                 
-            # Skip if collision
             if is_collision(neighbor):
                 continue
                 
-            tentative_g = g_score[current] + 1  # All moves cost 1
+            tentative_g = g_score[current] + 1
             
             if neighbor not in g_score or tentative_g < g_score[neighbor]:
                 came_from[neighbor] = current
                 g_score[neighbor] = tentative_g
                 f_score[neighbor] = tentative_g + heuristic(neighbor, goal)
                 heapq.heappush(open_set, (f_score[neighbor], neighbor))
-    
-    return []  # No path found
+
+    print(f"Warning: A* reached max iterations ({max_iter}) or no path found")
+    return []
 
 def encirclement_algorithm(input_dict: Dict, min_distance: float = 3.0, buffer: float = 1.0) -> List[Tuple[float, float]]:
     """Helper function: Evenly distribute vehicles around destination."""
@@ -238,3 +263,70 @@ def expulsion_algorithm(direction: str, input_dict: Dict, min_distance: float = 
     semi_positions = [pos for i, pos in enumerate(full_positions) if i != idx_to_remove]
     
     return semi_positions
+
+def push_destination(direction, destination_rect, step_size=0.5):
+    """根据方向推动目标矩形"""
+    dx, dy = {
+        'W': (0, step_size),    # 上
+        'A': (-step_size, 0),   # 左
+        'S': (0, -step_size),   # 下
+        'D': (step_size, 0)     # 右
+    }[direction]
+    
+    return [(x+dx, y+dy) for x,y in destination_rect]
+
+def encirclement_implement(input_dict: Dict, selected_vehicle_indices: List[int]) -> List[List[Tuple[float, float]]]:
+    """
+    改进版协同包围算法，可选择部分车辆参与
+    
+    Args:
+        input_dict: 包含所有车辆和障碍物信息
+        selected_vehicle_indices: 指定参与包围的车辆索引列表
+    """
+    # 提取参与车辆
+    selected_vehicles = [input_dict['all_vehicles'][i] for i in selected_vehicle_indices]
+    
+    # 计算包围位置时只考虑选定车辆
+    partial_input = {
+        'vehicle': selected_vehicles,
+        'obstacle': input_dict['obstacle'],
+        'destination': input_dict['destination']
+    }
+    target_positions = encirclement_algorithm(partial_input)
+    
+    # 为每辆选定车辆规划路径（考虑所有车辆作为障碍）
+    all_paths = []
+    for idx, vehicle_idx in enumerate(selected_vehicle_indices):
+        planning_dict = {
+            'all_vehicles': input_dict['all_vehicles'],  # 全部车辆信息
+            'obstacle': input_dict['obstacle'] + [input_dict['destination']],           # 静态障碍物
+            'destination': target_positions[idx]          # 该车的目标位置
+        }
+        path = a_star_path_planning(planning_dict, current_vehicle_index= vehicle_idx)
+        all_paths.append(path)
+    
+    return all_paths
+
+# 示例用法
+if __name__ == "__main__":
+    input_example = {"all_vehicles": [
+        [(0,0),(0,2),(2,2),(2,0)],   # 车0
+        [(4,0),(4,2),(6,2),(6,0)],   # 车1 
+        [(0,4),(0,6),(2,6),(2,4)],   # 车2
+        [(4,4),(4,6),(6,6),(6,4)],   # 车3
+        [(2,2),(2,4),(4,4),(4,2)]    # 车4
+    ],
+    "obstacle": [
+        [(8,8),(8,10),(10,10),(10,8)]
+    ],
+    "destination": [(15,15),(15,17),(17,17),(17,15)]
+}
+    
+        # 选择车0、2、4执行包围
+    selected_vehicles = [0, 2, 4]
+    paths = encirclement_implement(input_example, selected_vehicles)
+
+    # 结果可视化
+    for i, path in zip(selected_vehicles, paths):
+        print(f"Vehicle {i} path : {path}")
+
