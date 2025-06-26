@@ -2,9 +2,25 @@ import math
 import heapq
 from typing import List, Tuple, Dict, Optional
 
+import math
+import heapq
+from typing import List, Tuple, Dict, Optional
+
 class PathPlanner:
-    def __init__(self):
-        pass
+    def __init__(self, vehicles: List[List[Tuple[float, float]]], 
+                 obstacles: List[List[Tuple[float, float]]], 
+                 destinations: List[List[Tuple[float, float]]]):
+        """
+        初始化路径规划器
+        
+        Args:
+            vehicles: 所有车辆的矩形定义，每个车辆由4个角点组成
+            obstacles: 所有障碍物的矩形定义，每个障碍物由4个角点组成  
+            destinations: 所有目的地的矩形定义，每个目的地由4个角点组成
+        """
+        self.vehicles = vehicles
+        self.obstacles = obstacles
+        self.destinations = destinations
 
     @staticmethod
     def get_rect_center(rect: List[Tuple[float, float]]) -> Tuple[float, float]:
@@ -49,48 +65,65 @@ class PathPlanner:
                 min_dist = dist
         return min_dist
 
+    def get_all_obstacles(self, current_vehicle_index: int = None, target_destination_index: int = None) -> List[List[Tuple[float, float]]]:
+        """
+        获取所有障碍物，包括静态障碍物、其他车辆和其他目的地
+        
+        Args:
+            current_vehicle_index: 当前车辆索引，如果指定则排除该车辆
+            target_destination_index: 目标目的地索引，如果指定则排除该目的地
+        """
+        all_obstacles = []
+        
+        # 添加静态障碍物
+        all_obstacles.extend(self.obstacles)
+        
+        # 添加其他车辆作为障碍物
+        if current_vehicle_index is not None:
+            all_obstacles.extend([vehicle for i, vehicle in enumerate(self.vehicles) if i != current_vehicle_index])
+        else:
+            all_obstacles.extend(self.vehicles)
+        
+        # 添加其他目的地作为障碍物
+        if target_destination_index is not None:
+            all_obstacles.extend([dest for i, dest in enumerate(self.destinations) if i != target_destination_index])
+        else:
+            all_obstacles.extend(self.destinations)
+        
+        return all_obstacles
+
     def is_valid_position(self, pos: Tuple[float, float], vehicle_rect: List[Tuple[float, float]], 
-                         obstacles: List[List[Tuple[float, float]]], dest_center: Tuple[float, float], 
-                         min_distance: float, buffer: float) -> bool:
+                         dest_center: Tuple[float, float], min_distance: float, buffer: float,
+                         current_vehicle_index: int = None, target_destination_index: int = None) -> bool:
         """Check if a vehicle position is valid (no collisions and safe distance from destination)."""
         # Check distance to destination
         if math.hypot(pos[0] - dest_center[0], pos[1] - dest_center[1]) < min_distance:
             return False
         
-        # Check collision with obstacles
-        for obs in obstacles:
+        # Check collision with all obstacles
+        all_obstacles = self.get_all_obstacles(current_vehicle_index, target_destination_index)
+        for obs in all_obstacles:
             if self.rects_overlap(vehicle_rect, obs):
                 return False
             if self.point_to_rect_distance(pos, obs) < buffer:
                 return False
         return True
 
-    def a_star_path_planning(self, input_dict: Dict, current_vehicle_index: int = 0, max_iter: int = 10000) -> List[Tuple[float, float]]:
+    def a_star_path_planning(self, current_vehicle_index: int, destination_index: int, max_iter: int = 10000) -> List[Tuple[float, float]]:
         """
         A* path planning algorithm to navigate from a vehicle to a destination, avoiding obstacles.
         
         Args:
-            input_dict: A dictionary containing:
-                - 'all_vehicles': List of four corner points (x, y) representing all vehicles' rectangles.
-                - 'obstacle': List of obstacles, each obstacle is a list of four corner points (x, y).
-                - 'destination': A tuple (x, y) representing the destination point.
-            - current_vehicle_index: Index of current vehicle    
+            current_vehicle_index: 当前车辆的索引
+            destination_index: 目标目的地的索引
+            max_iter: 最大迭代次数
         
         Returns:
             A list of (x, y) tuples representing the path from vehicle's center to destination.
         """
-
-        def get_other_vehicles():
-            """Get obstacles from other vehicles"""
-            return [
-                vehicle for i, vehicle in enumerate(input_dict['all_vehicles'])
-                if i != current_vehicle_index
-            ]
-        
         def is_collision(point: Tuple[float, float], buffer: float = 1.0) -> bool:
-            """Check collision with static obstacles and other vehicles"""
-            # Combine obstacles
-            all_obstacles = input_dict['obstacle'] + get_other_vehicles()
+            """Check collision with all obstacles"""
+            all_obstacles = self.get_all_obstacles(current_vehicle_index, destination_index)
             
             for obs in all_obstacles:
                 if self.point_to_rect_distance(point, obs) < buffer:
@@ -101,21 +134,24 @@ class PathPlanner:
             """Manhattan distance compatible with floats"""
             return abs(a[0] - b[0]) + abs(a[1] - b[1])
 
-        # Unify coordinate types
-        current_vehicle = input_dict['all_vehicles'][current_vehicle_index]
+        # Get start and goal positions
+        current_vehicle = self.vehicles[current_vehicle_index]
+        target_destination = self.destinations[destination_index]
         start = self.get_rect_center(current_vehicle)
-        goal = (float(input_dict['destination'][0]), float(input_dict['destination'][1]))
+        goal = self.get_rect_center(target_destination)
         
         # Calculate reasonable boundaries
         all_points = []
         # Add all vehicle corner points
-        for vehicle in input_dict['all_vehicles']:
+        for vehicle in self.vehicles:
             all_points.extend(vehicle)
-        # Add target point
-        all_points.append(goal)
+        # Add all destination corner points
+        for dest in self.destinations:
+            all_points.extend(dest)
         # Add all obstacle corner points
-        for obs in input_dict['obstacle']:
+        for obs in self.obstacles:
             all_points.extend(obs)
+        
         min_x = min(p[0] for p in all_points) - 5
         max_x = max(p[0] for p in all_points) + 5
         min_y = min(p[1] for p in all_points) - 5
@@ -168,10 +204,22 @@ class PathPlanner:
         print(f"Warning: A* reached max iterations ({max_iter}) or no path found")
         return []
 
-    def encirclement_algorithm(self, input_dict: Dict, min_distance: float = 3.0, buffer: float = 1.0) -> List[Tuple[float, float]]:
-        """Helper function: Evenly distribute vehicles around destination."""
-        dest_center = self.get_rect_center(input_dict['destination'])
-        num_vehicles = len(input_dict['vehicle'])
+    def encirclement_algorithm(self, destination_index: int, vehicle_indices: List[int] = None, 
+                             min_distance: float = 3.0, buffer: float = 1.0) -> List[Tuple[float, float]]:
+        """
+        Helper function: Evenly distribute vehicles around destination.
+        
+        Args:
+            destination_index: 目标目的地的索引
+            vehicle_indices: 参与包围的车辆索引列表，如果为None则使用所有车辆
+            min_distance: 最小距离
+            buffer: 安全缓冲区
+        """
+        if vehicle_indices is None:
+            vehicle_indices = list(range(len(self.vehicles)))
+        
+        dest_center = self.get_rect_center(self.destinations[destination_index])
+        num_vehicles = len(vehicle_indices)
         radius = max(min_distance * 1.5, num_vehicles * 2.0)
         angles = [i * (2 * math.pi / num_vehicles) for i in range(num_vehicles)]
         
@@ -183,27 +231,30 @@ class PathPlanner:
         
         adjusted_positions = []
         for i, pos in enumerate(vehicle_positions):
-            vehicle_rect = input_dict['vehicle'][i] if i < len(input_dict['vehicle']) else input_dict['vehicle'][0]
+            vehicle_idx = vehicle_indices[i]
+            vehicle_rect = self.vehicles[vehicle_idx]
             dx = pos[0] - self.get_rect_center(vehicle_rect)[0]
             dy = pos[1] - self.get_rect_center(vehicle_rect)[1]
             shifted_rect = [(p[0] + dx, p[1] + dy) for p in vehicle_rect]
             
-            if self.is_valid_position(pos, shifted_rect, input_dict['obstacle'], dest_center, min_distance, buffer):
+            if self.is_valid_position(pos, shifted_rect, dest_center, min_distance, buffer, 
+                                    vehicle_idx, destination_index):
                 adjusted_positions.append(pos)
             else:
                 new_radius = radius + 1.0
-                new_x = dest_center[0] + new_radius * math.cos(angle)
-                new_y = dest_center[1] + new_radius * math.sin(angle)
+                new_x = dest_center[0] + new_radius * math.cos(angles[i])
+                new_y = dest_center[1] + new_radius * math.sin(angles[i])
                 new_pos = (new_x, new_y)
                 new_dx = new_pos[0] - self.get_rect_center(vehicle_rect)[0]
                 new_dy = new_pos[1] - self.get_rect_center(vehicle_rect)[1]
                 new_shifted_rect = [(p[0] + new_dx, p[1] + new_dy) for p in vehicle_rect]
                 
-                if self.is_valid_position(new_pos, new_shifted_rect, input_dict['obstacle'], dest_center, min_distance, buffer):
+                if self.is_valid_position(new_pos, new_shifted_rect, dest_center, min_distance, buffer,
+                                        vehicle_idx, destination_index):
                     adjusted_positions.append(new_pos)
                 else:
                     for delta_angle in [0.1, -0.1, 0.2, -0.2]:
-                        adjusted_angle = angle + delta_angle
+                        adjusted_angle = angles[i] + delta_angle
                         adjusted_x = dest_center[0] + radius * math.cos(adjusted_angle)
                         adjusted_y = dest_center[1] + radius * math.sin(adjusted_angle)
                         adjusted_pos = (adjusted_x, adjusted_y)
@@ -211,28 +262,34 @@ class PathPlanner:
                         adjusted_dy = adjusted_pos[1] - self.get_rect_center(vehicle_rect)[1]
                         adjusted_shifted_rect = [(p[0] + adjusted_dx, p[1] + adjusted_dy) for p in vehicle_rect]
                         
-                        if self.is_valid_position(adjusted_pos, adjusted_shifted_rect, input_dict['obstacle'], dest_center, min_distance, buffer):
+                        if self.is_valid_position(adjusted_pos, adjusted_shifted_rect, dest_center, 
+                                                min_distance, buffer, vehicle_idx, destination_index):
                             adjusted_positions.append(adjusted_pos)
                             break
                     else:
-                        continue
+                        adjusted_positions.append(pos)  # 如果找不到合适位置，使用原始位置
         return adjusted_positions
 
-    def expulsion_algorithm(self, direction: str, input_dict: Dict, min_distance: float = 3.0, buffer: float = 1.0) -> List[Tuple[float, float]]:
+    def expulsion_algorithm(self, direction: str, destination_index: int, vehicle_indices: List[int] = None,
+                          min_distance: float = 3.0, buffer: float = 1.0) -> List[Tuple[float, float]]:
         """
         Push the destination in a specified direction (W/A/S/D) while semi-encircling it with vehicles.
         
         Args:
             direction: 'W' (up), 'A' (left), 'S' (down), 'D' (right). If None, push to nearest boundary.
-            input_dict: Contains 'vehicle', 'obstacle', 'destination' (each defined by 4 corner points).
+            destination_index: 目标目的地的索引
+            vehicle_indices: 参与驱逐的车辆索引列表，如果为None则使用所有车辆
             min_distance: Minimum distance between vehicles and destination.
             buffer: Safety buffer to avoid collisions.
         
         Returns:
             List of (x, y) positions for each vehicle's center.
         """
+        if vehicle_indices is None:
+            vehicle_indices = list(range(len(self.vehicles)))
+        
         # Step 1: Determine push direction (default: nearest boundary)
-        dest_center = self.get_rect_center(input_dict['destination'])
+        dest_center = self.get_rect_center(self.destinations[destination_index])
         if not direction:
             # Find nearest boundary (simplified: push towards closest axis)
             if dest_center[0] < dest_center[1]:
@@ -241,18 +298,13 @@ class PathPlanner:
                 direction = 'S' if dest_center[1] < 0 else 'W'
         
         # Step 2: Simulate vehicle_count + 1 vehicles for full encirclement
-        fake_vehicle = input_dict['vehicle'][0]  # Use first vehicle as template
-        fake_input_dict = {
-            'vehicle': input_dict['vehicle'] + [fake_vehicle],
-            'obstacle': input_dict['obstacle'],
-            'destination': input_dict['destination']
-        }
-        full_positions = self.encirclement_algorithm(fake_input_dict, min_distance, buffer)
+        extended_vehicle_indices = vehicle_indices + [vehicle_indices[0]]  # 复制第一个车辆
+        full_positions = self.encirclement_algorithm(destination_index, extended_vehicle_indices, min_distance, buffer)
         
         # Step 3: Remove the vehicle in the push direction to form a semi-circle
-        if len(full_positions) != len(input_dict['vehicle']) + 1:
+        if len(full_positions) != len(vehicle_indices) + 1:
             print("Warning: Could not generate enough positions. Returning default encirclement.")
-            return self.encirclement_algorithm(input_dict, min_distance, buffer)
+            return self.encirclement_algorithm(destination_index, vehicle_indices, min_distance, buffer)
         
         # Find the vehicle to remove (opposite to push direction)
         angle_to_remove = {
@@ -273,35 +325,26 @@ class PathPlanner:
         
         return semi_positions
 
-    def sweep(self, input_dict: Dict, current_vehicle_index:int = 0) -> List[Tuple[int, int]]:
+    def sweep(self, current_vehicle_index: int, destination_index: int) -> List[Tuple[int, int]]:
         """
         基于边界点生成和A*路径规划的清扫算法
         Args:
-            input_dict: A dictionary containing:
-                - 'all_vehicles': List of four corner points (x, y) representing all vehicles' rectangles.
-                - 'obstacle': List of obstacles, each obstacle is a list of four corner points (x, y).
-                - 'destination': A tuple (x, y) representing the destination point.
-            - current_vehicle_index: Index of current vehicle
+            current_vehicle_index: 当前车辆索引
+            destination_index: 目标目的地索引
 
         输出：严格上下左右移动的路径[(x1,y1), (x2,y2), ...]
         """
-        def get_other_vehicles():
-            """Get obstacles from other vehicles"""
-            return [
-                vehicle for i, vehicle in enumerate(input_dict['all_vehicles'])
-                if i != current_vehicle_index
-            ]
         # 1. 获取当前车辆参数
-        current_vehicle = input_dict["all_vehicles"][current_vehicle_index]
+        current_vehicle = self.vehicles[current_vehicle_index]
+        target_destination = self.destinations[destination_index]
         vehicle_width = int(max(p[0] for p in current_vehicle) - min(p[0] for p in current_vehicle))
         vehicle_height = int(max(p[1] for p in current_vehicle) - min(p[1] for p in current_vehicle))
         
         # 2. 计算目标区域边界（整数坐标）
-        dest = input_dict["destination"]
-        min_x = int(min(p[0] for p in dest))
-        max_x = int(max(p[0] for p in dest))
-        min_y = int(min(p[1] for p in dest))
-        max_y = int(max(p[1] for p in dest))
+        min_x = int(min(p[0] for p in target_destination))
+        max_x = int(max(p[0] for p in target_destination))
+        min_y = int(min(p[1] for p in target_destination))
+        max_y = int(max(p[1] for p in target_destination))
         
         # 3. 生成入口关键点（考虑避障）
         def find_closest_corner(dest, vehicle, obstacles):
@@ -322,16 +365,19 @@ class PathPlanner:
             closest_corner = min(valid_corners, key=lambda c: math.hypot(c[0] - vehicle_center[0], c[1] - vehicle_center[1]))
             return closest_corner
         
-        obstacles = input_dict["obstacle"] + get_other_vehicles()
-        closest_corner = find_closest_corner(dest, current_vehicle, obstacles)
+        all_obstacles = self.get_all_obstacles(current_vehicle_index, destination_index)
+        closest_corner = find_closest_corner(target_destination, current_vehicle, all_obstacles)
 
         # 生成前往最近角点的路径
-        path = self.a_star_path_planning({
-            "all_vehicles": input_dict["all_vehicles"],
-            "current_vehicle_index": current_vehicle_index,
-            "obstacle": input_dict["obstacle"],
-            "destination": closest_corner
-        })
+        # 创建临时目的地用于A*规划
+        temp_dest_index = len(self.destinations)
+        self.destinations.append([closest_corner])  # 临时添加角点作为目的地
+        
+        path = self.a_star_path_planning(current_vehicle_index, temp_dest_index)
+        
+        # 移除临时目的地
+        self.destinations.pop()
+        
         # 从该角点开始生成 Z 字形路径
         def generate_zigzag_path(start, dest, vehicle, step_size=1.0):
             path = [start]
@@ -353,7 +399,8 @@ class PathPlanner:
             elif (x == max_x and y == max_y):  # 右上角 → 水平优先（向左下）
                 x_dir, y_dir = -1, -1
             else:
-                raise ValueError("Start point must be one of the rectangle corners")
+                # 如果不在角点，选择最近的角点方向
+                x_dir, y_dir = 1, 1
             
             # 水平优先的 Z 字形扫描
             if abs(max_x - min_x) >= abs(max_y - min_y):
@@ -387,7 +434,8 @@ class PathPlanner:
                         break  # 扫描完成
             
             return path
-        path += generate_zigzag_path(closest_corner, dest, current_vehicle)
+        
+        path += generate_zigzag_path(closest_corner, target_destination, current_vehicle)
         return path
 
     @staticmethod
@@ -402,34 +450,56 @@ class PathPlanner:
         
         return [(x+dx, y+dy) for x,y in destination_rect]
 
-    def encirclement_implement(self, input_dict: Dict, selected_vehicle_indices: List[int]) -> List[List[Tuple[float, float]]]:
+    def encirclement_implement(self, destination_index: int, selected_vehicle_indices: List[int]) -> List[List[Tuple[float, float]]]:
         """
         Improved cooperative encirclement algorithm that can select specific vehicles to participate
         
         Args:
-            input_dict: Contains all vehicle and obstacle information
+            destination_index: 目标目的地的索引
             selected_vehicle_indices: List of indices of vehicles to participate in encirclement
         """
-        # Extract participating vehicles
-        selected_vehicles = [input_dict['all_vehicles'][i] for i in selected_vehicle_indices]
+        # Calculate encirclement positions for selected vehicles
+        target_positions = self.encirclement_algorithm(destination_index, selected_vehicle_indices)
         
-        # Calculate encirclement positions considering only selected vehicles
-        partial_input = {
-            'vehicle': selected_vehicles,
-            'obstacle': input_dict['obstacle'],
-            'destination': input_dict['destination']
-        }
-        target_positions = self.encirclement_algorithm(partial_input)
-        
-        # Plan path for each selected vehicle (considering all vehicles as obstacles)
+        # Plan path for each selected vehicle
         all_paths = []
         for idx, vehicle_idx in enumerate(selected_vehicle_indices):
-            planning_dict = {
-                'all_vehicles': input_dict['all_vehicles'],  # All vehicle information
-                'obstacle': input_dict['obstacle'] + [input_dict['destination']],           # Static obstacles
-                'destination': target_positions[idx]          # Target position for this vehicle
-            }
-            path = self.a_star_path_planning(planning_dict, current_vehicle_index=vehicle_idx)
+            # 创建临时目的地用于A*规划
+            temp_dest_index = len(self.destinations)
+            target_pos = target_positions[idx]
+            self.destinations.append([target_pos, target_pos, target_pos, target_pos])  # 临时添加目标位置作为目的地
+            
+            path = self.a_star_path_planning(vehicle_idx, temp_dest_index)
             all_paths.append(path)
+            
+            # 移除临时目的地
+            self.destinations.pop()
         
         return all_paths
+    
+# 初始化
+vehicles =[
+    [[3, 18], [3, 16], [5, 16], [5, 18]],
+    [[9, 18], [9, 17], [10, 17], [10, 18]],
+    [[3, 8], [3, 9], [4, 9], [4, 8]],
+    [[17, 15], [17, 14], [18, 14], [18, 15]]
+]
+
+obstacles =[[[8, 14], [8, 13], [10, 13], [10, 14]],
+    [[11, 16], [11, 12], [12, 12], [12, 16]],
+    [[3, 12], [3, 11], [5, 11], [5, 12]]]
+
+
+destinations= [
+    [[11, 8], [11, 5], [13, 5], [13, 8]],
+    [[3, 5], [3, 3], [5, 3], [5, 5]]
+]
+
+planner = PathPlanner(vehicles, obstacles, destinations)
+
+# 使用A*规划从车辆0到目的地1的路径
+path = planner.a_star_path_planning(current_vehicle_index=0, destination_index=0)
+# 车辆0和2包围目的地1
+encirclement_path = planner.encirclement_implement(destination_index=0, selected_vehicle_indices=[0, 2])
+print("A* Path:", path)
+print("Encirclement Path:", encirclement_path)

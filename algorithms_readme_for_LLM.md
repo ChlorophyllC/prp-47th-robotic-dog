@@ -1,4 +1,4 @@
-你**能且仅能**从以下三个函数中选择，使用时均需要**传入参数**，你的回答是形如[a_star_path_planning(input_dict = {"all_vehicles": [[(0,0),(0,2),(2,2),(2,0)]],"obstacle": [[(8,8),(8,10),(10,10),(10,8)]],"destination": [(15,15),(15,17),(17,17),(17,15)]}, current_vehicle_index = 0)] 的列表。
+你**能且仅能**从以下三个函数中选择，使用时均需要**传入参数**，你的回答是形如[a_star_path_planning(input_dict = {"all_vehicles": [[]],"obstacle": [[]],"destination": []}, current_vehicle_index = )] 的列表。
 1. A* 路径规划算法
 ```python
 def a_star_path_planning(
@@ -44,4 +44,20 @@ def encirclement_implement(
         ...
     ]
 """
+```
+
+3. 清扫算法
+```python
+def sweep(self, input_dict: Dict, current_vehicle_index:int = 0) -> List[Tuple[int, int]]:
+    """
+    基于边界点生成和A*路径规划的清扫算法
+    Args:
+        input_dict: A dictionary containing:
+            - 'all_vehicles': List of four corner points (x, y) representing all vehicles' rectangles.
+            - 'obstacle': List of obstacles, each obstacle is a list of four corner points (x, y).
+            - 'destination': A tuple (x, y) representing the destination point.
+        - current_vehicle_index: Index of current vehicle
+
+    输出：严格上下左右移动的路径[(x1,y1), (x2,y2), ...]
+    """
 ```
