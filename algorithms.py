@@ -2,7 +2,6 @@ import math
 import heapq
 from typing import List, Tuple, Dict, Optional
 
-
 class PathPlanner:
     def __init__(self):
         pass
@@ -434,20 +433,3 @@ class PathPlanner:
             all_paths.append(path)
         
         return all_paths
-
-planner = PathPlanner()
-
-input_data = {
-    "all_vehicles": [
-        [(0,0), (0,2), (2,2), (2,0)],  # 当前车辆
-        [(4,4), (4,6), (6,6), (6,4)]   # 其他车辆
-    ],
-    "obstacle": [
-        [(8,2), (8,8), (10,8), (10,2)]  # 障碍物
-    ],
-    "destination": [(5,5), (5,10), (10,10), (10,5)]  # 清扫区域
-}
-
-path = planner.sweep(input_data, current_vehicle_index=0)
-
-print(path)
