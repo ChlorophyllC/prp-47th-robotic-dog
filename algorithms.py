@@ -56,7 +56,7 @@ def is_valid_position(pos: Tuple[float, float], vehicle_rect: List[Tuple[float, 
             return False
     return True
 
-def a_star_path_planning(input_dict: Dict, current_vehicle_index: int, max_iter: int = 10000) -> List[Tuple[int, int]]:
+def a_star_path_planning(input_dict: Dict, current_vehicle_index: int = 0, max_iter: int = 10000) -> List[Tuple[float, float]]:
     """
     A* path planning algorithm to navigate from a vehicle to a destination, avoiding obstacles.
     
@@ -320,7 +320,7 @@ if __name__ == "__main__":
         [(8,8),(8,10),(10,10),(10,8)]
     ],
     "destination": [(15,15),(15,17),(17,17),(17,15)]
-}
+    }
     
         # 选择车0、2、4执行包围
     selected_vehicles = [0, 2, 4]
