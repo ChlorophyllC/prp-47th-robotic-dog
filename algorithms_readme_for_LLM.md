@@ -33,6 +33,7 @@
 
 3. **清扫算法**  
    - 函数名：`sweep`  
+   - 函数功能：用 `vehicle_indices` 对应的小车实现对`destination_index` 对应的目的地的 Z 字形清扫
    - 必传参数：  
      - `current_vehicle_index`：当前车辆的索引（整数）  
      - `destination_index`：目标目的地的索引（整数）  
