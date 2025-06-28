@@ -109,7 +109,7 @@ class PathPlanner:
                 return False
         return True
 
-    def a_star_path_planning(self, current_vehicle_index: int, destination_index: int, max_iter: int = 10000) -> List[Tuple[float, float]]:
+    def a_star_path_planning(self, current_vehicle_index: int, destination_index: int, max_iter: int = 10000, off_draw_mode = False) -> List[Tuple[float, float]]:
         """
         A* path planning algorithm to navigate from a vehicle to a destination, avoiding obstacles.
         
@@ -176,6 +176,8 @@ class PathPlanner:
                 while current in came_from:
                     current = came_from[current]
                     path.append(current)
+                if not off_draw_mode:
+                    return [path[::-1]]
                 return path[::-1]
 
             closed_set.add(current)
@@ -373,7 +375,7 @@ class PathPlanner:
         temp_dest_index = len(self.destinations)
         self.destinations.append([closest_corner])  # 临时添加角点作为目的地
         
-        path = self.a_star_path_planning(current_vehicle_index, temp_dest_index)
+        path = self.a_star_path_planning(current_vehicle_index, temp_dest_index, off_draw_mode=True)
         
         # 移除临时目的地
         self.destinations.pop()
@@ -469,7 +471,7 @@ class PathPlanner:
             target_pos = target_positions[idx]
             self.destinations.append([target_pos, target_pos, target_pos, target_pos])  # 临时添加目标位置作为目的地
             
-            path = self.a_star_path_planning(vehicle_idx, temp_dest_index)
+            path = self.a_star_path_planning(vehicle_idx, temp_dest_index, off_draw_mode=True)
             all_paths.append(path)
             
             # 移除临时目的地
@@ -477,29 +479,29 @@ class PathPlanner:
         
         return all_paths
     
-# 初始化
-vehicles =[
-    [[3, 18], [3, 16], [5, 16], [5, 18]],
-    [[9, 18], [9, 17], [10, 17], [10, 18]],
-    [[3, 8], [3, 9], [4, 9], [4, 8]],
-    [[17, 15], [17, 14], [18, 14], [18, 15]]
-]
+# # 初始化
+# vehicles =[
+#     [[3, 18], [3, 16], [5, 16], [5, 18]],
+#     [[9, 18], [9, 17], [10, 17], [10, 18]],
+#     [[3, 8], [3, 9], [4, 9], [4, 8]],
+#     [[17, 15], [17, 14], [18, 14], [18, 15]]
+# ]
 
-obstacles =[[[8, 14], [8, 13], [10, 13], [10, 14]],
-    [[11, 16], [11, 12], [12, 12], [12, 16]],
-    [[3, 12], [3, 11], [5, 11], [5, 12]]]
+# obstacles =[[[8, 14], [8, 13], [10, 13], [10, 14]],
+#     [[11, 16], [11, 12], [12, 12], [12, 16]],
+#     [[3, 12], [3, 11], [5, 11], [5, 12]]]
 
 
-destinations= [
-    [[11, 8], [11, 5], [13, 5], [13, 8]],
-    [[3, 5], [3, 3], [5, 3], [5, 5]]
-]
+# destinations= [
+#     [[11, 8], [11, 5], [13, 5], [13, 8]],
+#     [[3, 5], [3, 3], [5, 3], [5, 5]]
+# ]
 
-planner = PathPlanner(vehicles, obstacles, destinations)
+# planner = PathPlanner(vehicles, obstacles, destinations)
 
-# 使用A*规划从车辆0到目的地1的路径
-path = planner.a_star_path_planning(current_vehicle_index=0, destination_index=0)
-# 车辆0和2包围目的地1
-encirclement_path = planner.encirclement_implement(destination_index=0, selected_vehicle_indices=[0, 2])
-print("A* Path:", path)
-print("Encirclement Path:", encirclement_path)
+# # 使用A*规划从车辆0到目的地1的路径
+# path = planner.a_star_path_planning(current_vehicle_index=0, destination_index=0)
+# # 车辆0和2包围目的地0
+# encirclement_path = planner.encirclement_implement(destination_index=0, selected_vehicle_indices=[0, 2])
+# print("A* Path:", path)
+# print("Encirclement Path:", encirclement_path)
