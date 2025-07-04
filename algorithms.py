@@ -136,6 +136,9 @@ class PathPlanner:
 
         # Get start and goal positions
         current_vehicle = self.vehicles[current_vehicle_index]
+        vehicle_width = int(max(p[0] for p in current_vehicle) - min(p[0] for p in current_vehicle))
+        vehicle_height = int(max(p[1] for p in current_vehicle) - min(p[1] for p in current_vehicle))
+        vehicle_max_size = max(vehicle_width, vehicle_height)
         target_destination = self.destinations[destination_index]
         start = self.get_rect_center(current_vehicle)
         goal = self.get_rect_center(target_destination)
@@ -192,7 +195,7 @@ class PathPlanner:
                 if neighbor in closed_set:
                     continue
                     
-                if is_collision(neighbor):
+                if is_collision(neighbor, vehicle_max_size):
                     continue
                     
                 tentative_g = g_score[current] + 1
@@ -219,16 +222,27 @@ class PathPlanner:
         """
         if vehicle_indices is None:
             vehicle_indices = list(range(len(self.vehicles)))
+
+        dest_rect = self.destinations[destination_index]
+        dest_center = self.get_rect_center(dest_rect)
+            # 计算目标矩形尺寸
+        xs = [p[0] for p in dest_rect]
+        ys = [p[1] for p in dest_rect]
+        width = max(xs) - min(xs)
+        height = max(ys) - min(ys)
         
-        dest_center = self.get_rect_center(self.destinations[destination_index])
+        # 基础半轴长度（椭圆的形式）
+        a = width / 2 + min_distance + buffer  # x 方向半轴
+        b = height / 2 + min_distance + buffer  # y 方向半轴
+        
         num_vehicles = len(vehicle_indices)
-        radius = max(min_distance * 1.5, num_vehicles * 2.0)
         angles = [i * (2 * math.pi / num_vehicles) for i in range(num_vehicles)]
         
         vehicle_positions = []
         for angle in angles:
-            x = dest_center[0] + radius * math.cos(angle)
-            y = dest_center[1] + radius * math.sin(angle)
+            # 使用椭圆公式获取包围坐标
+            x = dest_center[0] + a * math.cos(angle)
+            y = dest_center[1] + b * math.sin(angle)
             vehicle_positions.append((x, y))
         
         adjusted_positions = []
@@ -238,38 +252,27 @@ class PathPlanner:
             dx = pos[0] - self.get_rect_center(vehicle_rect)[0]
             dy = pos[1] - self.get_rect_center(vehicle_rect)[1]
             shifted_rect = [(p[0] + dx, p[1] + dy) for p in vehicle_rect]
+
+            # 尝试多个半轴微调以避免碰撞
+            valid = False
+            for delta in range(0, 5):  # 最多尝试 +4 的额外半径
+                scale = 1.0 + 0.1 * delta
+                test_x = dest_center[0] + scale * a * math.cos(angles[i])
+                test_y = dest_center[1] + scale * b * math.sin(angles[i])
+                dx = test_x - self.get_rect_center(vehicle_rect)[0]
+                dy = test_y - self.get_rect_center(vehicle_rect)[1]
+                shifted_rect = [(p[0] + dx, p[1] + dy) for p in vehicle_rect]
+
+                if self.is_valid_position((test_x, test_y), shifted_rect, dest_center, 
+                                        min_distance, buffer, vehicle_idx, destination_index):
+                    adjusted_positions.append((test_x, test_y))
+                    valid = True
+                    break
             
-            if self.is_valid_position(pos, shifted_rect, dest_center, min_distance, buffer, 
-                                    vehicle_idx, destination_index):
+            if not valid:
+                # fallback
                 adjusted_positions.append(pos)
-            else:
-                new_radius = radius + 1.0
-                new_x = dest_center[0] + new_radius * math.cos(angles[i])
-                new_y = dest_center[1] + new_radius * math.sin(angles[i])
-                new_pos = (new_x, new_y)
-                new_dx = new_pos[0] - self.get_rect_center(vehicle_rect)[0]
-                new_dy = new_pos[1] - self.get_rect_center(vehicle_rect)[1]
-                new_shifted_rect = [(p[0] + new_dx, p[1] + new_dy) for p in vehicle_rect]
-                
-                if self.is_valid_position(new_pos, new_shifted_rect, dest_center, min_distance, buffer,
-                                        vehicle_idx, destination_index):
-                    adjusted_positions.append(new_pos)
-                else:
-                    for delta_angle in [0.1, -0.1, 0.2, -0.2]:
-                        adjusted_angle = angles[i] + delta_angle
-                        adjusted_x = dest_center[0] + radius * math.cos(adjusted_angle)
-                        adjusted_y = dest_center[1] + radius * math.sin(adjusted_angle)
-                        adjusted_pos = (adjusted_x, adjusted_y)
-                        adjusted_dx = adjusted_pos[0] - self.get_rect_center(vehicle_rect)[0]
-                        adjusted_dy = adjusted_pos[1] - self.get_rect_center(vehicle_rect)[1]
-                        adjusted_shifted_rect = [(p[0] + adjusted_dx, p[1] + adjusted_dy) for p in vehicle_rect]
-                        
-                        if self.is_valid_position(adjusted_pos, adjusted_shifted_rect, dest_center, 
-                                                min_distance, buffer, vehicle_idx, destination_index):
-                            adjusted_positions.append(adjusted_pos)
-                            break
-                    else:
-                        adjusted_positions.append(pos)  # 如果找不到合适位置，使用原始位置
+        
         return adjusted_positions
 
     def expulsion_algorithm(self, direction: str, destination_index: int, vehicle_indices: List[int] = None,
@@ -327,7 +330,7 @@ class PathPlanner:
         
         return semi_positions
 
-    def sweep(self, current_vehicle_index: int, destination_index: int) -> List[Tuple[int, int]]:
+    def sweep(self, current_vehicle_index: int, destination_index: int) -> List[Tuple[float, float]]:
         """
         基于边界点生成和A*路径规划的清扫算法
         Args:
@@ -480,28 +483,15 @@ class PathPlanner:
         return all_paths
     
 # # 初始化
-# vehicles =[
-#     [[3, 18], [3, 16], [5, 16], [5, 18]],
-#     [[9, 18], [9, 17], [10, 17], [10, 18]],
-#     [[3, 8], [3, 9], [4, 9], [4, 8]],
-#     [[17, 15], [17, 14], [18, 14], [18, 15]]
-# ]
-
-# obstacles =[[[8, 14], [8, 13], [10, 13], [10, 14]],
-#     [[11, 16], [11, 12], [12, 12], [12, 16]],
-#     [[3, 12], [3, 11], [5, 11], [5, 12]]]
-
-
-# destinations= [
-#     [[11, 8], [11, 5], [13, 5], [13, 8]],
-#     [[3, 5], [3, 3], [5, 3], [5, 5]]
-# ]
+# vehicles=[[[41,23],[41,20],[45,20],[45,23]],[[43,34],[43,30],[47,30],[47,34]]]
+# obstacles=[[[17,38],[17,30],[28,30],[28,38]]]
+# destinations=[[[17,19],[17,7],[29,7],[29,19]]]
 
 # planner = PathPlanner(vehicles, obstacles, destinations)
 
 # # 使用A*规划从车辆0到目的地1的路径
 # path = planner.a_star_path_planning(current_vehicle_index=0, destination_index=0)
-# # 车辆0和2包围目的地0
-# encirclement_path = planner.encirclement_implement(destination_index=0, selected_vehicle_indices=[0, 2])
+# 车辆0和2包围目的地0
+# encirclement_path = planner.encirclement_implement(destination_index=0, selected_vehicle_indices=[0, 1])
 # print("A* Path:", path)
 # print("Encirclement Path:", encirclement_path)

@@ -1,4 +1,4 @@
-import test_api_hidden
+import test
 import algorithms
 import draw
 import tkinter as tk
@@ -213,8 +213,8 @@ class VehiclePlannerGUI:
                            ha='center', va='center', fontweight='bold')
         
         # 设置图形属性
-        self.ax.set_xlim(0, 20)
-        self.ax.set_ylim(0, 20)
+        self.ax.set_xlim(0, 72)
+        self.ax.set_ylim(0, 54)
         self.ax.set_xlabel('X坐标')
         self.ax.set_ylabel('Y坐标')
         self.ax.set_title('车辆路径规划可视化')
@@ -269,12 +269,12 @@ class VehiclePlannerGUI:
             obj = algorithms.PathPlanner(self.vehicles, self.obstacles, self.destinations)
             
             # 调用LLM
-            function_list = test_api_hidden.call_LLM(self.vehicles, self.destinations, command)
+            function_list = test.call_LLM(self.vehicles, self.destinations, command)
             
             if function_list is None:
                 result = "Error: LLM failed!"
             else:
-                path = test_api_hidden.Interpret_function_list(function_list, obj)
+                path = test.Interpret_function_list(function_list, obj)
                 result = "结果为：\n" + str(path)
 
             self.update_visualization()
