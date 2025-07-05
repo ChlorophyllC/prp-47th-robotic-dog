@@ -2,10 +2,6 @@ import math
 import heapq
 from typing import List, Tuple, Dict, Optional
 
-import math
-import heapq
-from typing import List, Tuple, Dict, Optional
-
 class PathPlanner:
     def __init__(self, vehicles: List[List[Tuple[float, float]]], 
                  obstacles: List[List[Tuple[float, float]]], 

@@ -3,6 +3,7 @@ import cv2
 from ultralytics import YOLO
 from typing import Tuple, List, Optional
 import pickle
+import os
 
 class CoordinateMapper:
     """
@@ -112,7 +113,7 @@ class CoordinateMapper:
         """
         return self.transform_matrix if self.is_initialized else None
 
-    def detect_vehicle(path, show_results=False) -> List[Tuple[float, float]]:
+    def detect_vehicle(self, path, model_path="best.pt", show_results=False) -> List[Tuple[float, float]]:
         """
         检测图像中的小车目标
         """
@@ -124,7 +125,7 @@ class CoordinateMapper:
             return
         
         # 加载训练好的模型
-        model = YOLO('best.pt') 
+        model = YOLO(model_path) 
 
         results = model.predict(frame, imgsz=640, conf=0.5)
         
@@ -170,7 +171,7 @@ class CoordinateMapper:
             print(f"返回的小车坐标: {vehicle_coords}")
         
         return None
-
+    
     def save_mapper(self, filepath: str) -> bool:
         """
         保存坐标映射器到文件

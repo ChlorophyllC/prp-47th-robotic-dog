@@ -1,7 +1,6 @@
 import cv2
 import sys
 import copy
-import msvcrt
 import numpy as np
 import time
 import threading
@@ -286,10 +285,10 @@ class HikvisionCamera:
             
             # 保存文件
             try:
-                with open(file_path.encode('ascii'), 'wb+') as file_open:
-                    img_buff = (c_ubyte * st_convert_param.nImageLen)()
-                    cdll.msvcrt.memcpy(byref(img_buff), st_convert_param.pImageBuffer, st_convert_param.nImageLen)
-                    file_open.write(img_buff)
+                with open(file_path, 'wb') as file_open:
+                    buffer_ptr = cast(st_convert_param.pImageBuffer, POINTER(c_ubyte * st_convert_param.nImageLen))
+                    file_open.write(buffer_ptr.contents)
+
                 print(f"保存图片成功: {file_path}")
                 return True
             except Exception as e:
