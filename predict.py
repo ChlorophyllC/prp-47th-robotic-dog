@@ -154,5 +154,9 @@ def detect_and_save(path, save_dir="detection_results", show_results=False):
     
     print(f"检测结果已保存到: {output_file}")
 
-# 运行检测
-detect_and_save('test_image.jpg', show_results=True)
+if __name__ == "__main__":
+    # 测试图片路径
+    test_image_path = os.path.join(path, 'test_image.jpg')
+    
+    # 检测并保存结果
+    detect_and_save(test_image_path, show_results=True)

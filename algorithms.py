@@ -109,7 +109,7 @@ class PathPlanner:
                 return False
         return True
 
-    def a_star_path_planning(self, current_vehicle_index: int, destination_index: int, max_iter: int = 10000, off_draw_mode = False) -> List[Tuple[float, float]]:
+    def a_star_path_planning(self, current_vehicle_index: int, destination_index: int, max_iter: int = 10000, off_draw_mode = False, dest_point: Tuple[float, float] = None) -> List[Tuple[float, float]]:
         """
         A* path planning algorithm to navigate from a vehicle to a destination, avoiding obstacles.
         
@@ -139,9 +139,13 @@ class PathPlanner:
         vehicle_width = int(max(p[0] for p in current_vehicle) - min(p[0] for p in current_vehicle))
         vehicle_height = int(max(p[1] for p in current_vehicle) - min(p[1] for p in current_vehicle))
         vehicle_max_size = max(vehicle_width, vehicle_height)
-        target_destination = self.destinations[destination_index]
         start = self.get_rect_center(current_vehicle)
-        goal = self.get_rect_center(target_destination)
+        
+        if dest_point is not None:
+            goal = dest_point
+        else:
+            target_destination = self.destinations[destination_index]
+            goal = self.get_rect_center(target_destination)
         
         # Calculate reasonable boundaries
         all_points = []
@@ -374,74 +378,72 @@ class PathPlanner:
         closest_corner = find_closest_corner(target_destination, current_vehicle, all_obstacles)
 
         # 生成前往最近角点的路径
-        # 创建临时目的地用于A*规划
-        temp_dest_index = len(self.destinations)
-        self.destinations.append([closest_corner])  # 临时添加角点作为目的地
-        
-        path = self.a_star_path_planning(current_vehicle_index, temp_dest_index, off_draw_mode=True)
-        
-        # 移除临时目的地
-        self.destinations.pop()
+        path = self.a_star_path_planning(current_vehicle_index, destination_index, off_draw_mode=True, dest_point=closest_corner)
         
         # 从该角点开始生成 Z 字形路径
-        def generate_zigzag_path(start, dest, vehicle, step_size=1.0):
-            path = [start]
+        def generate_zigzag_path(start, dest, vehicle, step_size=None):
+            path = []
             x, y = start
-            vehicle_length = max(vehicle_width, vehicle_height)
-            # 计算四边形的边界
+
+            # 根据车辆尺寸设置步长
+            vehicle_width = int(max(p[0] for p in vehicle) - min(p[0] for p in vehicle))
+            vehicle_height = int(max(p[1] for p in vehicle) - min(p[1] for p in vehicle))
+            if step_size is None:
+                step_size = min(vehicle_width, vehicle_height)
+            
+            # 边界框
             xs = [p[0] for p in dest]
             ys = [p[1] for p in dest]
             min_x, max_x = min(xs), max(xs)
             min_y, max_y = min(ys), max(ys)
             
-            # 判断 start 位于哪个角，决定扫描方向
-            if (x == min_x and y == min_y):  # 左下角 → 水平优先
+            # 起点位置判断（增加容差）
+            if math.isclose(x, min_x, abs_tol=1.0) and math.isclose(y, min_y, abs_tol=1.0):
                 x_dir, y_dir = 1, 1
-            elif (x == max_x and y == min_y):  # 右下角 → 水平优先（向左）
+            elif math.isclose(x, max_x, abs_tol=1.0) and math.isclose(y, min_y, abs_tol=1.0):
                 x_dir, y_dir = -1, 1
-            elif (x == min_x and y == max_y):  # 左上角 → 水平优先（向下）
+            elif math.isclose(x, min_x, abs_tol=1.0) and math.isclose(y, max_y, abs_tol=1.0):
                 x_dir, y_dir = 1, -1
-            elif (x == max_x and y == max_y):  # 右上角 → 水平优先（向左下）
+            elif math.isclose(x, max_x, abs_tol=1.0) and math.isclose(y, max_y, abs_tol=1.0):
                 x_dir, y_dir = -1, -1
             else:
-                # 如果不在角点，选择最近的角点方向
-                x_dir, y_dir = 1, 1
-            
-            # 水平优先的 Z 字形扫描
-            if abs(max_x - min_x) >= abs(max_y - min_y):
-                while (y_dir > 0 and y <= max_y) or (y_dir < 0 and y >= min_y):
-                    # 水平移动（直到 x 边界）
-                    while (x_dir > 0 and x < max_x) or (x_dir < 0 and x > min_x):
-                        x += x_dir * step_size
-                        path.append((x, y))
+                x_dir, y_dir = 1, 1  # 默认从左下角向右上角
+
+            # 是否水平优先
+            horizontal_priority = (max_x - min_x) >= (max_y - min_y)
+
+            if horizontal_priority:
+                y_line = y
+                while (y_dir > 0 and y_line <= max_y) or (y_dir < 0 and y_line >= min_y):
+                    # 当前行扫描
+                    x_pos = min_x if x_dir > 0 else max_x
+                    line = []
+                    while (x_dir > 0 and x_pos <= max_x) or (x_dir < 0 and x_pos >= min_x):
+                        line.append((x_pos, y_line))
+                        x_pos += x_dir * step_size
+                    path.extend(line)
                     
-                    # 垂直换行（如果未超出 y 边界）
-                    if (y_dir > 0 and y + vehicle_length <= max_y) or (y_dir < 0 and y - vehicle_length >= min_y):
-                        y += y_dir * vehicle_length
-                        path.append((x, y))
-                        x_dir *= -1  # 换方向
-                    else:
-                        break  # 扫描完成
-            # 垂直优先的 Z 字形扫描
+                    y_line += y_dir * vehicle_height
+                    x_dir *= -1
             else:
-                while (x_dir > 0 and x <= max_x) or (x_dir < 0 and x >= min_x):
-                    # 垂直移动（直到 y 边界）
-                    while (y_dir > 0 and y < max_y) or (y_dir < 0 and y > min_y):
-                        y += y_dir * step_size
-                        path.append((x, y))
+                x_col = x
+                while (x_dir > 0 and x_col <= max_x) or (x_dir < 0 and x_col >= min_x):
+                    # 当前列扫描
+                    y_pos = min_y if y_dir > 0 else max_y
+                    col = []
+                    while (y_dir > 0 and y_pos <= max_y) or (y_dir < 0 and y_pos >= min_y):
+                        col.append((x_col, y_pos))
+                        y_pos += y_dir * step_size
+                    path.extend(col)
                     
-                    # 水平换列（如果未超出 x 边界）
-                    if (x_dir > 0 and x + vehicle_length <= max_x) or (x_dir < 0 and x - vehicle_length >= min_x):
-                        x += x_dir * vehicle_length
-                        path.append((x, y))
-                        y_dir *= -1  # 换方向
-                    else:
-                        break  # 扫描完成
-            
+                    x_col += x_dir * vehicle_width
+                    y_dir *= -1
+
             return path
-        
-        path += generate_zigzag_path(closest_corner, target_destination, current_vehicle)
-        return path
+
+        path += generate_zigzag_path(start=closest_corner, dest=target_destination, vehicle=current_vehicle)
+
+        return [path]
 
     @staticmethod
     def push_destination(direction, destination_rect, step_size=0.5):
@@ -482,7 +484,7 @@ class PathPlanner:
         
         return all_paths
     
-# # 初始化
+# # # 初始化
 # vehicles=[[[41,23],[41,20],[45,20],[45,23]],[[43,34],[43,30],[47,30],[47,34]]]
 # obstacles=[[[17,38],[17,30],[28,30],[28,38]]]
 # destinations=[[[17,19],[17,7],[29,7],[29,19]]]
@@ -491,7 +493,9 @@ class PathPlanner:
 
 # # 使用A*规划从车辆0到目的地1的路径
 # path = planner.a_star_path_planning(current_vehicle_index=0, destination_index=0)
-# 车辆0和2包围目的地0
+# # 车辆0和2包围目的地0
 # encirclement_path = planner.encirclement_implement(destination_index=0, selected_vehicle_indices=[0, 1])
+# # 车辆0 清扫目的地0
+# path = planner.sweep(current_vehicle_index=0, destination_index=0)
 # print("A* Path:", path)
 # print("Encirclement Path:", encirclement_path)
