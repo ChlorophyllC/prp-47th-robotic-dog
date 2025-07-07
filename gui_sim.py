@@ -8,13 +8,14 @@ import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.patches import Rectangle
 import numpy as np
+import matplotlib
+print(matplotlib.get_backend())
 
 class VehiclePlannerGUI:
     def __init__(self, root):
         self.root = root
         self.root.title("车辆路径规划系统")
         self.root.geometry("1200x800")
-        
         # 数据存储
         self.vehicles = []
         self.obstacles = []
@@ -232,11 +233,30 @@ class VehiclePlannerGUI:
         self.canvas.draw()
 
     def draw_path_on_ax(self, path_list):
-        """将路径绘制到已有的 self.ax 上"""
-        for path in path_list:
+        """将路径绘制到已有的 self.ax 上
+        
+        Args:
+            path_list: 路径列表，每个路径是点坐标列表或包含路径数据的字典
+        """
+        if not path_list:
+            return
+        
+        processed_paths = []
+        for path_dict in path_list:      
+            if isinstance(path_dict, dict):
+                # 格式：{0: [...], 1: [...]}
+                for vid, path in path_dict.items():
+                    if isinstance(path, list):
+                        processed_paths.append((vid, path))
+        
+        # 开始绘图
+        for vehicle_index, path in processed_paths:
+            if not path:
+                continue
+
             path_x = [point[0] for point in path]
             path_y = [point[1] for point in path]
-            
+
             # 绘制路径线
             self.ax.plot(path_x, path_y, color='orange', linewidth=2, linestyle='--',
                         label='规划路径', marker='o', markersize=4, alpha=0.8)
@@ -252,6 +272,13 @@ class VehiclePlannerGUI:
             end_point = path[-1]
             self.ax.plot(start_point[0], start_point[1], 'go', markersize=12, label='起点')
             self.ax.plot(end_point[0], end_point[1], 'ro', markersize=12, label='终点')
+
+            # 添加车辆编号标签
+            if vehicle_index is not None:
+                self.ax.text(start_point[0], start_point[1] + 1.0, f'车辆{vehicle_index}',
+                            fontsize=9, color='black', fontweight='bold',
+                            bbox=dict(boxstyle='round,pad=0.2', facecolor='yellow', alpha=0.6))
+
 
     def execute_planning(self):
         """执行路径规划"""
@@ -273,12 +300,19 @@ class VehiclePlannerGUI:
             
             if function_list is None:
                 result = "Error: LLM failed!"
+                path_results = []
             else:
-                path = test.Interpret_function_list(function_list, obj)
-                result = "结果为：\n" + str(path)
+                path_results = test.Interpret_function_list(function_list, obj)
+                result = "结果为：\n" + "\n".join(str(res) for res in path_results)
 
+            # 清除之前的绘图
+            self.ax.clear()
             self.update_visualization()
-            self.draw_path_on_ax(path)
+            
+            # 绘制路径
+            if path_results:
+                self.draw_path_on_ax(path_results)
+            
             self.canvas.draw()
             # 显示结果
             self.result_text.delete(1.0, tk.END)
@@ -286,6 +320,10 @@ class VehiclePlannerGUI:
             
         except Exception as e:
             messagebox.showerror("错误", f"执行失败: {str(e)}")
+            # 发生错误时清除路径绘制
+            self.ax.clear()
+            self.update_visualization()
+            self.canvas.draw()
 
 def main():
     root = tk.Tk()
