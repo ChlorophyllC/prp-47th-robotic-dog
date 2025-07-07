@@ -27,9 +27,9 @@
      - `min_distance`：车辆与目的地的最小距离（浮点数）  
      - `buffer`：安全缓冲区（浮点数）  
    - 输出：
-     - 类型：List[List[Tuple[float, float]]]
-     - 说明：返回列表中的每个列表由一系列坐标点 (x, y) 组成的列表，表示从对应车辆中心到目的地的路径。若无法找到路径或达到最大迭代次数，返回空列表 []。
-   - 示例：`encirclement_implement(destination_index=0, selected_vehicle_indices=[0, 1])`  
+     - 类型：Dict[int, List[Tuple[float, float]]]
+     - 说明：返回字典，键为车辆索引，值为对应车辆的路径（由坐标点组成的列表）。每个路径表示从对应车辆中心到包围位置的路径。若无法找到路径或达到最大迭代次数，对应车辆返回空列表 []。
+     -  示例：`encirclement_implement(destination_index=0, selected_vehicle_indices=[0, 1])`  
 
 3. **清扫算法**  
    - 函数名：`sweep`  
@@ -38,8 +38,8 @@
      - `current_vehicle_index`：当前车辆的索引（整数）  
      - `destination_index`：目标目的地的索引（整数）  
    - 输出：
-     - 类型：List[Tuple[int, int]]
-     - 说明：由整数坐标点 (x, y) 组成的列表，表示严格上下左右移动的清扫路径。路径包含从当前位置到目标区域的入口路径，以及覆盖目标区域的 Z 字形轨迹。
+     - 类型：Dict[int, List[Tuple[float, float]]]
+     - 说明：返回字典，键为车辆索引，值为该车辆的清扫路径。路径由坐标点 (x, y) 组成，包含从当前位置到目标区域的入口路径，以及覆盖目标区域的 Z 字形轨迹。
    - 示例：`sweep(current_vehicle_index=0, destination_index=0)`  
 
 

@@ -23,6 +23,7 @@ def get_car_position(topic: str, timeout: float = 5.0) -> Tuple[float, float]:
     return (pos.x, pos.y)
     
 def main():
+    
     # 创建相机实例
     camera = Camera(device_index=0)
 
@@ -35,15 +36,25 @@ def main():
         if camera.connect():
             print("相机连接成功")
             
-            camera.capture_rotated_image(file_path="test_img.jpg", angle=-15)
+            if not os.path.exists("./captures"):
+                os.makedirs("./captures")
+                print("创建目录 ./captures")
+
+            camera.capture_rotated_image(file_path="./captures/test_img.jpg", angle=-15)
 
             # 创建坐标映射器实例
             mapper = CoordinateMapper()
 
+            # 初始化 ROS 节点
+            rospy.init_node('camera_processor', anonymous=True)
+            
             if not mapper.load_mapper("coordinate_mapper.pkl"):
                 print("未找到坐标映射器文件，正在初始化...")
                 # 检测小车并获取图像坐标
-                vehicle_img_coords = mapper.detect_vehicle(path="test_img.jpg", model_path="best.pt", show_results=False)
+                vehicle_img_coords = mapper.detect_vehicle(path="./captures/test_img.jpg", model_path="best.pt", show_results=False)
+                if vehicle_img_coords is None:
+                    print("未检测到小车目标，请检查图像或模型")
+                    return
                 print("图像坐标：", vehicle_img_coords)
 
                 # 获取三辆车的 ROS 实际坐标
@@ -65,17 +76,18 @@ def main():
 
                 else:
                     print("错误：图像与实际坐标数量不一致")
+                    return
             else:
                 print("已加载坐标映射器")
 
-            while True:
-                # 间隔 5s 拍摄单张图片
-                filePath = "./captures/image_" + time.strftime("%Y%m%d_%H%M%S") + ".jpg"
-                camera.capture_rotated_image(file_path=filePath, angle=-15)
-                print(f"已拍摄图片: {filePath}")
-                time.sleep(5)
+            # while not rospy.is_shutdown():
+            #     # 间隔 5s 拍摄单张图片
+            #     filePath = "./captures/image_" + time.strftime("%Y%m%d_%H%M%S") + ".jpg"
+            #     camera.capture_rotated_image(file_path=filePath, angle=-15)
+            #     print(f"已拍摄图片: {filePath}")
+            #     time.sleep(5)
+                
 
-            
     except KeyboardInterrupt:
         print("用户中断")
     finally:
@@ -86,4 +98,6 @@ def main():
 if __name__ == "__main__":
     main()
 
-
+# export ROS_HOSTNAME=192.168.1.214
+# export ROS_MASTER_URI=http://192.168.1.214:11311
+# roslaunch vrpn_client_ros sample.launch server:=192.168.0.2

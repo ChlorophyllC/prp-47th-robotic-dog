@@ -164,8 +164,10 @@ class CoordinateMapper:
             # 如果检测到超过3个小车，按y坐标排序，取前3个
             vehicle_coords = sorted(vehicle_coords, key=lambda x: x[1])[:3]
             print(f"检测到{len(vehicle_coords)}个小车，已选择前3个")
+            return vehicle_coords
         elif len(vehicle_coords) < 3:
             print(f"警告：只检测到{len(vehicle_coords)}个小车，需要3个小车来建立坐标映射")
+            return None
         
         if show_results:
             print(f"返回的小车坐标: {vehicle_coords}")

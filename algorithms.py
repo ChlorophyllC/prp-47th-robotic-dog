@@ -210,7 +210,7 @@ class PathPlanner:
         return []
 
     def encirclement_algorithm(self, destination_index: int, vehicle_indices: List[int] = None, 
-                             min_distance: float = 3.0, buffer: float = 1.0) -> List[Tuple[float, float]]:
+                             min_distance: float = 3.0, buffer: float = 1.0) -> Dict[int, List[Tuple[float, float]]]:
         """
         Helper function: Evenly distribute vehicles around destination.
         
@@ -219,13 +219,17 @@ class PathPlanner:
             vehicle_indices: 参与包围的车辆索引列表，如果为None则使用所有车辆
             min_distance: 最小距离
             buffer: 安全缓冲区
+            
+        Returns:
+            Dict[int, List[Tuple[float, float]]]: 字典，键为车辆索引，值为该车辆的路径
         """
         if vehicle_indices is None:
             vehicle_indices = list(range(len(self.vehicles)))
 
         dest_rect = self.destinations[destination_index]
         dest_center = self.get_rect_center(dest_rect)
-            # 计算目标矩形尺寸
+        
+        # 计算目标矩形尺寸
         xs = [p[0] for p in dest_rect]
         ys = [p[1] for p in dest_rect]
         width = max(xs) - min(xs)
@@ -273,8 +277,126 @@ class PathPlanner:
                 # fallback
                 adjusted_positions.append(pos)
         
-        return adjusted_positions
+        # 返回字典格式，键为车辆索引，值为目标位置（作为单点路径）
+        result = {}
+        for i, vehicle_idx in enumerate(vehicle_indices):
+            result[vehicle_idx] = [adjusted_positions[i]]
+        
+        return result
 
+    def sweep(self, current_vehicle_index: int, destination_index: int) -> Dict[int, List[Tuple[float, float]]]:
+        """
+        基于边界点生成和A*路径规划的清扫算法
+        Args:
+            current_vehicle_index: 当前车辆索引
+            destination_index: 目标目的地索引
+
+        Returns:
+            Dict[int, List[Tuple[float, float]]]: 字典，键为车辆索引，值为该车辆的路径
+        """
+        # 1. 获取当前车辆参数
+        current_vehicle = self.vehicles[current_vehicle_index]
+        target_destination = self.destinations[destination_index]
+        vehicle_width = int(max(p[0] for p in current_vehicle) - min(p[0] for p in current_vehicle))
+        vehicle_height = int(max(p[1] for p in current_vehicle) - min(p[1] for p in current_vehicle))
+        
+        # 2. 计算目标区域边界（整数坐标）
+        min_x = int(min(p[0] for p in target_destination))
+        max_x = int(max(p[0] for p in target_destination))
+        min_y = int(min(p[1] for p in target_destination))
+        max_y = int(max(p[1] for p in target_destination))
+        
+        # 3. 生成入口关键点（考虑避障）
+        def find_closest_corner(dest, vehicle, obstacles):
+            # 计算车辆的中心点
+            vehicle_center = self.get_rect_center(vehicle)
+            
+            # 检查每个角点
+            valid_corners = []
+            for corner in dest:
+                # 检查点是否在任何障碍物内
+                if any(self.rects_overlap([corner], obs) for obs in obstacles):
+                    continue
+                valid_corners.append(corner)
+            
+            if not valid_corners:
+                return []
+            # 找到距离车辆中心最近的角点
+            closest_corner = min(valid_corners, key=lambda c: math.hypot(c[0] - vehicle_center[0], c[1] - vehicle_center[1]))
+            return closest_corner
+        
+        all_obstacles = self.get_all_obstacles(current_vehicle_index, destination_index)
+        closest_corner = find_closest_corner(target_destination, current_vehicle, all_obstacles)
+
+        # 生成前往最近角点的路径
+        path = self.a_star_path_planning(current_vehicle_index, destination_index, off_draw_mode=True, dest_point=closest_corner)
+        
+        # 从该角点开始生成 Z 字形路径
+        def generate_zigzag_path(start, dest, vehicle, step_size=None):
+            path = []
+            x, y = start
+
+            # 根据车辆尺寸设置步长
+            vehicle_width = int(max(p[0] for p in vehicle) - min(p[0] for p in vehicle))
+            vehicle_height = int(max(p[1] for p in vehicle) - min(p[1] for p in vehicle))
+            if step_size is None:
+                step_size = min(vehicle_width, vehicle_height)
+            
+            # 边界框
+            xs = [p[0] for p in dest]
+            ys = [p[1] for p in dest]
+            min_x, max_x = min(xs), max(xs)
+            min_y, max_y = min(ys), max(ys)
+            
+            # 起点位置判断（增加容差）
+            if math.isclose(x, min_x, abs_tol=1.0) and math.isclose(y, min_y, abs_tol=1.0):
+                x_dir, y_dir = 1, 1
+            elif math.isclose(x, max_x, abs_tol=1.0) and math.isclose(y, min_y, abs_tol=1.0):
+                x_dir, y_dir = -1, 1
+            elif math.isclose(x, min_x, abs_tol=1.0) and math.isclose(y, max_y, abs_tol=1.0):
+                x_dir, y_dir = 1, -1
+            elif math.isclose(x, max_x, abs_tol=1.0) and math.isclose(y, max_y, abs_tol=1.0):
+                x_dir, y_dir = -1, -1
+            else:
+                x_dir, y_dir = 1, 1  # 默认从左下角向右上角
+
+            # 是否水平优先
+            horizontal_priority = (max_x - min_x) >= (max_y - min_y)
+
+            if horizontal_priority:
+                y_line = y
+                while (y_dir > 0 and y_line <= max_y) or (y_dir < 0 and y_line >= min_y):
+                    # 当前行扫描
+                    x_pos = min_x if x_dir > 0 else max_x
+                    line = []
+                    while (x_dir > 0 and x_pos <= max_x) or (x_dir < 0 and x_pos >= min_x):
+                        line.append((x_pos, y_line))
+                        x_pos += x_dir * step_size
+                    path.extend(line)
+                    
+                    y_line += y_dir * vehicle_height
+                    x_dir *= -1
+            else:
+                x_col = x
+                while (x_dir > 0 and x_col <= max_x) or (x_dir < 0 and x_col >= min_x):
+                    # 当前列扫描
+                    y_pos = min_y if y_dir > 0 else max_y
+                    col = []
+                    while (y_dir > 0 and y_pos <= max_y) or (y_dir < 0 and y_pos >= min_y):
+                        col.append((x_col, y_pos))
+                        y_pos += y_dir * step_size
+                    path.extend(col)
+                    
+                    x_col += x_dir * vehicle_width
+                    y_dir *= -1
+
+            return path
+
+        path += generate_zigzag_path(start=closest_corner, dest=target_destination, vehicle=current_vehicle)
+
+        # 返回字典格式，键为车辆索引，值为该车辆的路径
+        return {current_vehicle_index: path}
+    
     def expulsion_algorithm(self, direction: str, destination_index: int, vehicle_indices: List[int] = None,
                           min_distance: float = 3.0, buffer: float = 1.0) -> List[Tuple[float, float]]:
         """
@@ -453,27 +575,30 @@ class PathPlanner:
         
         return [(x+dx, y+dy) for x,y in destination_rect]
 
-    def encirclement_implement(self, destination_index: int, selected_vehicle_indices: List[int]) -> List[List[Tuple[float, float]]]:
+    def encirclement_implement(self, destination_index: int, selected_vehicle_indices: List[int]) -> Dict[int, List[Tuple[float, float]]]:
         """
-        Improved cooperative encirclement algorithm that can select specific vehicles to participate
+        Encirclement algorithm that can select specific vehicles to participate
         
         Args:
             destination_index: 目标目的地的索引
             selected_vehicle_indices: List of indices of vehicles to participate in encirclement
+            
+        Returns:
+            Dict[int, List[Tuple[float, float]]]: 字典，键为车辆索引，值为该车辆的路径
         """
         # Calculate encirclement positions for selected vehicles
         target_positions = self.encirclement_algorithm(destination_index, selected_vehicle_indices)
         
         # Plan path for each selected vehicle
-        all_paths = []
-        for idx, vehicle_idx in enumerate(selected_vehicle_indices):
+        all_paths = {}
+        for vehicle_idx in selected_vehicle_indices:
             # 创建临时目的地用于A*规划
             temp_dest_index = len(self.destinations)
-            target_pos = target_positions[idx]
+            target_pos = target_positions[vehicle_idx][0]  # 取出位置（之前是单点路径）
             self.destinations.append([target_pos, target_pos, target_pos, target_pos])  # 临时添加目标位置作为目的地
             
             path = self.a_star_path_planning(vehicle_idx, temp_dest_index, off_draw_mode=True)
-            all_paths.append(path)
+            all_paths[vehicle_idx] = path
             
             # 移除临时目的地
             self.destinations.pop()
