@@ -8,8 +8,6 @@ import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.patches import Rectangle
 import numpy as np
-import matplotlib
-print(matplotlib.get_backend())
 
 class VehiclePlannerGUI:
     def __init__(self, root):

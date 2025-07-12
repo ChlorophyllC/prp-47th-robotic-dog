@@ -5,6 +5,8 @@ from typing import Tuple, List, Optional
 import pickle
 import os
 
+class_names = ['Yellow', 'Red', 'Green', 'Blue', 'Vehicle', 'Ball']
+
 class CoordinateMapper:
     """
     使用仿射变换将图片坐标映射到现实坐标的类
@@ -63,26 +65,22 @@ class CoordinateMapper:
             print(f"初始化失败：{e}")
             return False
     
-    def map_to_real_coords(self, image_x: float, image_y: float) -> Tuple[float, float]:
+    def map_to_real_coords(self, image_coord: Tuple[float, float]) -> Tuple[float, float]:
         """
-        将图片坐标映射到现实坐标
-        
+        将图片坐标映射到现实坐标（输入为一个(x, y)元组）
+
         Args:
-            image_x: 图片x坐标
-            image_y: 图片y坐标
-            
+            image_coord: 图片坐标 (x, y)
+
         Returns:
             Tuple[float, float]: 现实坐标 (X, Y)
         """
         if not self.is_initialized:
             raise RuntimeError("坐标映射器尚未初始化，请先调用 initialize_transform")
-        
-        # 将图片坐标转换为齐次坐标
-        img_point = np.array([image_x, image_y, 1])
-        
-        # 应用变换矩阵
+
+        x, y = image_coord
+        img_point = np.array([x, y, 1])
         real_point = img_point @ self.transform_matrix
-        
         return (real_point[0], real_point[1])
     
     def batch_map_to_real_coords(self, image_coords: List[Tuple[float, float]]) -> List[Tuple[float, float]]:
@@ -114,66 +112,50 @@ class CoordinateMapper:
         return self.transform_matrix if self.is_initialized else None
 
     def detect_vehicle(self, path, model_path="best.pt", show_results=False) -> List[Tuple[float, float]]:
-        """
-        检测图像中的小车目标
-        """
-
-        # YOLO检测
+        """检测图像中的小车目标"""
         frame = cv2.imread(path)
         if frame is None:
             print(f"无法读取图像: {path}")
-            return
-        
-        # 加载训练好的模型
-        model = YOLO(model_path) 
+            return None
 
-        results = model.predict(frame, imgsz=640, conf=0.5)
-        
-        # 获取图像尺寸
         image_height, image_width = frame.shape[:2]
 
-        # 提取小车坐标
+        model = YOLO(model_path)
+        results = model.predict(frame, imgsz=640, conf=0.5)
+
         vehicle_coords = []
-        
+
         for result in results:
-            boxes = result.boxes
-            if boxes is not None:
-                for box in boxes:
-                    # 获取边界框坐标 (x1, y1, x2, y2)
-                    x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
-                    
-                    # 计算中心点坐标
-                    center_x = (x1 + x2) / 2
-                    center_y = (y1 + y2) / 2
-                    
-                    # 将坐标缩放回原图尺寸
-                    scale_x = image_width / 640
-                    scale_y = image_height / 640
-                    
-                    # 缩放坐标
-                    center_x_scaled = center_x * scale_x
-                    center_y_scaled = center_y * scale_y
-                    
-                    vehicle_coords.append((center_x_scaled, center_y_scaled))
-                    
-                    if show_results:
-                        print(f"检测到小车: 中心坐标 ({center_x_scaled:.1f}, {center_y_scaled:.1f})")
-        
-        # 按位置排序
-        if len(vehicle_coords) >= 3:
-            # 如果检测到超过3个小车，按y坐标排序，取前3个
-            vehicle_coords = sorted(vehicle_coords, key=lambda x: x[1])[:3]
-            print(f"检测到{len(vehicle_coords)}个小车，已选择前3个")
-            return vehicle_coords
-        elif len(vehicle_coords) < 3:
-            print(f"警告：只检测到{len(vehicle_coords)}个小车，需要3个小车来建立坐标映射")
+            boxes = result.boxes.cpu().numpy()
+            for box in boxes:
+                # 获取框坐标和类别
+                x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
+                cls_id = int(box.cls[0].item())
+                conf = float(box.conf[0].item())
+                
+                # 根据类别分类
+                class_name = class_names[cls_id]
+                if class_name != "Vehicle":
+                    continue  # 不是vehicle类跳过
+
+                center_x = (x1 + x2) / 2
+                center_y = (y1 + y2) / 2
+
+                if center_x > image_width or center_y > image_height:
+                    print(f"⚠ 警告：检测坐标超出范围 ({center_x:.1f}, {center_y:.1f}) > ({image_width}, {image_height})")
+
+                vehicle_coords.append((center_x, center_y))
+
+                if show_results:
+                    print(f"检测到小车: 中心坐标 ({center_x:.1f}, {center_y:.1f})")
+
+        if len(vehicle_coords) < 3:
+            print(f"⚠ 只检测到 {len(vehicle_coords)} 个小车，无法建立坐标映射")
             return None
-        
-        if show_results:
-            print(f"返回的小车坐标: {vehicle_coords}")
-        
-        return None
-    
+
+        vehicle_coords = sorted(vehicle_coords, key=lambda x: x[1])[:3]
+        return vehicle_coords
+
     def save_mapper(self, filepath: str) -> bool:
         """
         保存坐标映射器到文件
@@ -225,7 +207,7 @@ class CoordinateMapper:
             
             mapper = cls()
             mapper.transform_matrix = mapper_data['transform_matrix']
-            mapper.is_initialized = mapper_data['is_initialized']
+            mapper.is_initialized = True
             
             print(f"坐标映射器已从文件加载: {filepath}")
             return mapper
@@ -253,10 +235,10 @@ if __name__ == "__main__":
     # 创建坐标映射器
     mapper = CoordinateMapper()
     mapper.initialize_transform(vehicle_img_coords, vehicle_real_coords)
-    
+    mapper.detect_vehicle(path='./captures/init_mapping.jpg',show_results=True)
     # 测试映射
     test_img_point = (250, 250)
-    real_point = mapper.map_to_real_coords(test_img_point[0], test_img_point[1])
+    real_point = mapper.map_to_real_coords(test_img_point)
     print(f"图片坐标 {test_img_point} 映射到现实坐标: {real_point}")
     
     # 批量映射测试
@@ -269,6 +251,6 @@ if __name__ == "__main__":
     # 验证已知点的映射精度
     print(f"\n验证映射精度:")
     for i, (img_p, expected_real_p) in enumerate(zip(vehicle_img_coords, vehicle_real_coords)):
-        mapped_real_p = mapper.map_to_real_coords(img_p[0], img_p[1])
+        mapped_real_p = mapper.map_to_real_coords(img_p)
         error = ((mapped_real_p[0] - expected_real_p[0])**2 + (mapped_real_p[1] - expected_real_p[1])**2)**0.5
         print(f"  Vehicle {i+1}: 误差 = {error:.6f}")

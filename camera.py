@@ -333,7 +333,6 @@ class HikvisionCamera:
         
         # 保存旋转后的图像
         cv2.imwrite(file_path, rotated_image)
-        print(f"保存旋转后的图片成功: {file_path}")
         
         return True
 

@@ -244,47 +244,39 @@ class PathPlanner:
         num_vehicles = len(vehicle_indices)
         angles = [i * (2 * math.pi / num_vehicles) for i in range(num_vehicles)]
         
-        vehicle_positions = []
-        for angle in angles:
-            # 使用椭圆公式获取包围坐标
-            x = dest_center[0] + a * math.cos(angle)
-            y = dest_center[1] + b * math.sin(angle)
-            vehicle_positions.append((x, y))
-        
-        adjusted_positions = []
-        for i, pos in enumerate(vehicle_positions):
-            vehicle_idx = vehicle_indices[i]
-            vehicle_rect = self.vehicles[vehicle_idx]
-            dx = pos[0] - self.get_rect_center(vehicle_rect)[0]
-            dy = pos[1] - self.get_rect_center(vehicle_rect)[1]
-            shifted_rect = [(p[0] + dx, p[1] + dy) for p in vehicle_rect]
+            # 先生成一圈包围点（椭圆上）
+        candidate_points = [(dest_center[0] + a * math.cos(angle),
+                            dest_center[1] + b * math.sin(angle)) for angle in angles]
 
-            # 尝试多个半轴微调以避免碰撞
-            valid = False
-            for delta in range(0, 5):  # 最多尝试 +4 的额外半径
-                scale = 1.0 + 0.1 * delta
-                test_x = dest_center[0] + scale * a * math.cos(angles[i])
-                test_y = dest_center[1] + scale * b * math.sin(angles[i])
-                dx = test_x - self.get_rect_center(vehicle_rect)[0]
-                dy = test_y - self.get_rect_center(vehicle_rect)[1]
-                shifted_rect = [(p[0] + dx, p[1] + dy) for p in vehicle_rect]
+        # 给每辆车分配离它最近的包围点（不可重复）
+        remaining_points = candidate_points.copy()
+        assignment = {}
 
-                if self.is_valid_position((test_x, test_y), shifted_rect, dest_center, 
-                                        min_distance, buffer, vehicle_idx, destination_index):
-                    adjusted_positions.append((test_x, test_y))
-                    valid = True
-                    break
+        for vehicle_idx in vehicle_indices:
+            vehicle_center = self.get_rect_center(self.vehicles[vehicle_idx])
+            closest_point = min(remaining_points,
+                                key=lambda pt: math.hypot(pt[0] - vehicle_center[0], pt[1] - vehicle_center[1]))
             
-            if not valid:
-                # fallback
-                adjusted_positions.append(pos)
-        
-        # 返回字典格式，键为车辆索引，值为目标位置（作为单点路径）
-        result = {}
-        for i, vehicle_idx in enumerate(vehicle_indices):
-            result[vehicle_idx] = [adjusted_positions[i]]
-        
-        return result
+            # 尝试微调该点位置，避免碰撞
+            angle = math.atan2(closest_point[1] - dest_center[1], closest_point[0] - dest_center[0])
+            for delta in range(5):
+                scale = 1.0 + 0.1 * delta
+                test_x = dest_center[0] + scale * a * math.cos(angle)
+                test_y = dest_center[1] + scale * b * math.sin(angle)
+                dx = test_x - vehicle_center[0]
+                dy = test_y - vehicle_center[1]
+                shifted_rect = [(p[0] + dx, p[1] + dy) for p in self.vehicles[vehicle_idx]]
+
+                if self.is_valid_position((test_x, test_y), shifted_rect, dest_center,
+                                        min_distance, buffer, vehicle_idx, destination_index):
+                    assignment[vehicle_idx] = [(test_x, test_y)]
+                    break
+            else:
+                assignment[vehicle_idx] = [closest_point]  # fallback
+
+            remaining_points.remove(closest_point)  # 确保唯一使用
+
+        return assignment
 
     def sweep(self, current_vehicle_index: int, destination_index: int) -> Dict[int, List[Tuple[float, float]]]:
         """

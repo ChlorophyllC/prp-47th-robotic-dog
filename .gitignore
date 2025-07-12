@@ -5,3 +5,4 @@ test_image.jpg
 detection_results/
 MvSdkLog/
 _pycache_/
+blank.py
