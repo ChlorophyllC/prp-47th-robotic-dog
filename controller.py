@@ -72,7 +72,8 @@ class TrajectoryPlanner:
                  min_speed: float = 0.0,
                  goal_tolerance: float = 1.5,
                  max_angle_control: float = 50.0,
-                 bias = 0):
+                 bias = 0,
+                 name = None):
         """
         初始化轨迹跟踪器
         
@@ -90,10 +91,12 @@ class TrajectoryPlanner:
         self.goal_tolerance = goal_tolerance
         self.max_angle_control = max_angle_control
         self.bias = bias
-        
+        self.name = name
+
         # 当前状态
         self.current_pos = np.array([0.0, 0.0])
         self.current_twist = None  # 用于接收速度信息
+        self.trajectory_history = []
         # 初始化位置和朝向
         self.current_heading = 0.0
         self.current_target_idx = 0
@@ -122,13 +125,18 @@ class TrajectoryPlanner:
         """
         self.current_pos = np.array([x, y])
         self.current_heading = heading
+        self.trajectory_history.append((x, y))
+
         if self.log_file:
             target_x, target_y, target_idx = self.find_target_point()
             self.log_file.write(
                 f"{time.time()},{x},{y},{heading},{target_x},{target_y},{target_idx}\n"
             )
             self.log_file.flush()
-        
+    
+    def get_trajectory(self) -> List[Tuple[float, float]]:
+        return self.trajectory_history.copy()   
+     
     def interpolate_path(self, points, spacing=30.0):
         """
         按照路径长度插值（每隔 spacing 插一个点）
@@ -159,28 +167,26 @@ class TrajectoryPlanner:
     
     def find_target_point(self) -> Tuple[float, float, int]:
         """
-        寻找前瞻目标点 - 简化版本
-        
+        寻找前瞻目标点（基于当前位置 + 向前搜索一段lookahead距离）
         :return: (target_x, target_y, target_index)
         """
-        if self.current_target_idx >= len(self.trajectory_points):
-            return self.trajectory_points[-1][0], self.trajectory_points[-1][1], len(self.trajectory_points) - 1
-        
-        # 检查是否到达当前目标点
-        current_point = self.trajectory_points[self.current_target_idx]
-        distance_to_current = np.linalg.norm(self.current_pos - current_point)
-        
-        # 如果距离当前目标点很近，切换到下一个点
-        if distance_to_current < self.goal_tolerance:
-            if self.current_target_idx < len(self.trajectory_points) - 1:
-                self.current_target_idx += 1
-                print(f"✓ 到达目标点 {self.current_target_idx-1}, 切换到点 {self.current_target_idx}: {self.trajectory_points[self.current_target_idx]}")
-            else:
-                print("✓ 到达最终目标点")
-        
-        # 返回当前目标点
-        target_point = self.trajectory_points[self.current_target_idx]
-        return target_point[0], target_point[1], self.current_target_idx
+        lookahead_distance = getattr(self, 'lookahead_distance', 200.0)  # 默认值
+        best_idx = self.current_target_idx  # 起始点，不回退
+
+        for i in range(self.current_target_idx, len(self.trajectory_points)):
+            pt = self.trajectory_points[i]
+            dist = np.linalg.norm(self.current_pos - pt)
+            if dist >= lookahead_distance:
+                best_idx = i
+                break
+        else:
+            # 没找到足够远的，选最后一个点
+            best_idx = len(self.trajectory_points) - 1
+
+        self.current_target_idx = best_idx  # 向前推进
+        target_point = self.trajectory_points[best_idx]
+        return target_point[0], target_point[1], best_idx
+
     
 
     def normalize_angle(self, angle):
@@ -205,7 +211,7 @@ class TrajectoryPlanner:
         if not hasattr(self, 'angle_pid'):
             # 角度PID控制器 - 控制角速度
             self.angle_pid = PID_posi(
-                kp=4.0,
+                kp=1.0,
                 ki=0.1,
                 kd=1.0,
                 target=0.0,  # 目标角度误差为0
@@ -224,7 +230,7 @@ class TrajectoryPlanner:
             )
             
             # 延迟补偿和预测参数
-            self.ros_delay = 0.15
+            self.ros_delay = 0
             self.position_history = []
             self.heading_history = []
             self.control_history = []
@@ -239,7 +245,7 @@ class TrajectoryPlanner:
             self.stuck_counter = 0
             self.last_pos = self.current_pos.copy()
             self.velocity_stuck_counter = 0
-            self.stuck_threshold = 10.0  # mm
+            self.stuck_threshold = 2.0  # mm
             self.stuck_time_threshold = 3.0  # 秒
             
             # 电机补偿参数 - 用于处理左右电机不一致
@@ -391,9 +397,9 @@ class TrajectoryPlanner:
         # 根据角度误差调整速度 - 角度误差大时减速
         angle_error_deg = abs(math.degrees(angle_error))
         if angle_error_deg > 30:
-            speed *= 0.6  # 大角度误差时减速
+            speed *= 0.4  # 大角度误差时减速
         elif angle_error_deg > 15:
-            speed *= 0.8  # 中等角度误差时适当减速
+            speed *= 0.6  # 中等角度误差时适当减速
         
         # 限制输出范围
         speed = np.clip(speed, self.min_speed, self.max_speed)
@@ -634,7 +640,11 @@ class TrajectoryPlanner:
             os.makedirs(log_dir)
             
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        self.log_file = open(f"{log_dir}/trajectory_{timestamp}.log", "w")
+        if self.name:
+            self.log_file = open(f"{log_dir}/trajectory_{timestamp}_{self.name}.log", "w")
+        else:
+            self.log_file = open(f"{log_dir}/trajectory_{timestamp}.log", "w")
+
         self.log_file.write("time,x,y,heading,target_x,target_y,target_idx\n")
             
     def close_log_file(self):
@@ -755,14 +765,7 @@ if __name__ == "__main__":
     ip_7 = "192.168.1.207"
     port = int(12345)
     # 定义轨迹点
-    trajectory = [
-        (-362, 329),
-        (500, 329),
-        (500, 1000),
-        (-362, 1000),
-        (-362, 329),
-    ]
-    
+    trajectory = [(249.82962346682265, 403.38896104873334), (263.3746038268231, 388.25394111597245), (276.9195841868235, 373.1189211832118), (290.4645645468239, 357.983901250451), (304.0095449068243, 342.84888131769037), (317.5545252668247, 327.7138613849295), (317.0728697443277, 313.36780672364785), (316.5912142218307, 299.021752062366), (316.1095586993338, 284.67569740108434), (315.62790317683675, 270.32964273980247), (315.14624765433985, 255.98358807852082), (314.6645921318428, 241.63753341723896), (328.20957249184323, 226.5025134844783), (341.75455285184364, 211.36749355171742), (355.29953321184405, 196.23247361895676), (369.32616909434137, 195.44350834747775), (383.3528049768388, 194.65454307599884), (397.3794408593361, 193.86557780451983), (411.40607674183354, 193.07661253304082), (425.43271262433086, 192.2876472615618), (439.4593485068283, 191.4986819900828), (453.4859843893256, 190.70971671860377), (467.51262027182304, 189.92075144712476), (481.53925615432036, 189.13178617564586), (495.5658920368177, 188.34282090416684), (509.5925279193151, 187.55385563268783), (523.6191638018124, 186.7648903612088), (537.6457996843098, 185.9759250897298), (551.6724355668072, 185.18695981825078), (565.6990714493046, 184.39799454677177), (579.7257073318019, 183.60902927529287), (593.7523432142993, 182.82006400381385), (607.7789790967967, 182.03109873233484), (621.8056149792941, 181.24213346085583), (635.8322508617914, 180.4531681893768), (649.8588867442888, 179.6642029178978), (663.8855226267862, 178.87523764641878), (677.9121585092835, 178.08627237493977), (691.9387943917809, 177.29730710346087), (705.9654302742782, 176.50834183198185), (719.9920661567756, 175.71937656050284), (734.018702039273, 174.93041128902382), (748.0453379217704, 174.1414460175448), (762.0719738042677, 173.3524807460658), (776.0986096867651, 172.56351547458678), (790.1252455692625, 171.77455020310776), (804.1518814517599, 170.98558493162886), (818.6601728567542, 184.5426743214315), (832.6868087392517, 183.75370904995248), (846.713444621749, 182.96474377847346), (861.2217360267432, 196.52183316827632), (875.2483719092406, 195.7328678967973), (889.756663314235, 209.28995728659993), (903.7832991967324, 208.50099201512103), (918.2915906017267, 222.05808140492388), (932.3182264842239, 221.26911613344487), (946.8265178892184, 234.8262055232475), (960.8531537717158, 234.03724025176848), (975.3614451767103, 247.59432964157133), (989.3880810592075, 246.80536437009232), (1003.4147169417049, 246.01639909861342), (1017.9230083466994, 259.57348848841605), (1031.9496442291966, 258.78452321693703), (1046.4579356341908, 272.3416126067399), (1060.4845715166882, 271.5526473352609), (1074.9928629216827, 285.1097367250635), (1089.0194988041799, 284.3207714535845), (1103.5277902091743, 297.87786084338745), (1117.5544260916718, 297.08889557190844), (1131.5810619741692, 296.2999303004294), (1146.0893533791634, 309.85701969023205), (1154.759152784109, 568.0860035933036), (1146.0893533791634, 309.85701969023205), (1137.419553974218, 51.62803578716034), (1128.7497545692722, -206.60094811591125), (1212.4279143417598, -225.68079440606675), (1221.0977137467053, 32.54818949700484), (1229.7675131516507, 290.77717340007644), (1238.4373125565962, 549.0061573031479), (1323.0787833740774, 558.6184203355557), (1314.408983969132, 300.389436432484), (1305.7391845641864, 42.160452529412396), (1297.0693851592407, -216.0685313736592)]
     # 创建轨迹跟踪器 - 使用稳定参数
     planner = TrajectoryPlanner(
         trajectory_points=trajectory,

@@ -5,6 +5,7 @@ import algorithms
 import os
 import time
 import rospy
+import numpy as np
 from geometry_msgs.msg import PoseStamped, TwistStamped
 from typing import Tuple, Dict, List, Optional, Callable
 import predict
@@ -12,7 +13,7 @@ import threading
 from enum import Enum
 import json
 from controller import TrajectoryPlanner, StateReceiver, send_ctrl
-
+from predict import batch_convert_to_image_coordinates
 class SystemState(Enum):
     """系统状态枚举"""
     IDLE = "idle"
@@ -29,13 +30,24 @@ class SystemState(Enum):
 class VehicleControlSystem:
     """多车控制系统主类"""
     
-    def __init__(self, camera_index: int = 0, capture_dir: str = "./captures"):
+    def __init__(self, 
+                 camera_index: int = 0, 
+                 capture_dir: str = "./captures",
+                 vehicle_ids: Optional[List[int]] = None,
+                 car_ips: Optional[Dict[int, str]] = None,
+                 car_bias: Optional[Dict[int, float]] = None,
+                 car_port: int = 12345,
+                 camera_rotation: int = -21):
         """
         初始化系统
         
         Args:
             camera_index: 相机设备索引
             capture_dir: 图像捕获目录
+            vehicle_ids: 车辆ID列表，如[1, 2, 3]，用于生成对应的topics
+            car_ips: 小车IP配置字典，格式为{车辆ID: IP地址}
+            car_bias: 小车偏置配置字典，格式为{车辆ID: 偏置值}
+            car_port: 小车通信端口
         """
         self.camera_index = camera_index
         self.capture_dir = capture_dir
@@ -53,18 +65,15 @@ class VehicleControlSystem:
         self.grid_obstacles = []
         self.grid_destinations = []
         self.car_id_mapping = {}  # 小车ID映射
-        self.path_results = {}  # 路径规划结果
+        self.grid_path_results = []
+        self.path_results = []  # 路径规划结果
         
-        # ROS配置
-        self.car_topics = [
-            "/vrpn_client_node/vehicle_1/pose",
-            "/vrpn_client_node/vehicle_2/pose", 
-            "/vrpn_client_node/vehicle_3/pose"
-        ]
+        # 设置小车配置
+        self._setup_vehicle_config(vehicle_ids, car_ips, car_bias, car_port)
         
         # 控制参数
         self.detection_interval = 5.0  # 检测间隔（秒）
-        self.camera_rotation = -19  # 相机旋转角度
+        self.camera_rotation = camera_rotation  # 相机旋转角度
         self.mapper_file = "coordinate_mapper.pkl"
         
         # 回调函数
@@ -80,18 +89,121 @@ class VehicleControlSystem:
         # 控制模块相关
         self.trajectory_planners = {}  # 存储每个小车的轨迹规划器
         self.state_receivers = {}      # 存储每个小车的状态接收器
-        self.car_ips = {               # 小车IP配置
-            0: "192.168.1.208",
-            1: "192.168.1.207",  # 根据实际情况配置
-            2: "192.168.1.205"
-        }
-        self.car_bias = {
-            0: -5,
-            1: 7,
-            2: 0
-        }
-        self.car_port = 12345
+    
+    def _setup_vehicle_config(self, 
+                            vehicle_ids: Optional[List[int]] = None,
+                            car_ips: Optional[Dict[int, str]] = None,
+                            car_bias: Optional[Dict[int, float]] = None,
+                            car_port: int = 12345,
+                            camera_rotation: int = -21):
+        """
+        设置车辆配置
         
+        Args:
+            vehicle_ids: 车辆ID列表
+            car_ips: 小车IP配置
+            car_bias: 小车偏置配置
+            car_port: 通信端口
+        """
+        # 设置默认车辆ID
+        if vehicle_ids is None:
+            vehicle_ids = [1]
+        
+        # 生成ROS话题
+        self.car_topics = []
+        for vehicle_id in vehicle_ids:
+            topic = f"/vrpn_client_node/vehicle_{vehicle_id}/pose"
+            self.car_topics.append(topic)
+        
+        # 设置小车IP配置
+        if car_ips is None:
+            # 默认IP配置（根据vehicle_ids的索引）
+            default_ips = ["192.168.1.208", "192.168.1.205", "192.168.1.207"]
+            self.car_ips = {}
+            for i, vehicle_id in enumerate(vehicle_ids):
+                if i < len(default_ips):
+                    self.car_ips[i] = default_ips[i]  # 使用索引作为键
+                else:
+                    self.car_ips[i] = f"192.168.1.{200 + i}"  # 自动生成IP
+        else:
+            # 将vehicle_id映射到索引
+            self.car_ips = {}
+            for i, vehicle_id in enumerate(vehicle_ids):
+                if vehicle_id in car_ips:
+                    self.car_ips[i] = car_ips[vehicle_id]
+                else:
+                    self.car_ips[i] = f"192.168.1.{200 + i}"
+        
+        # 设置小车偏置配置
+        if car_bias is None:
+            # 默认偏置配置
+            default_bias = [-5, 7, 0]
+            self.car_bias = {}
+            for i, vehicle_id in enumerate(vehicle_ids):
+                if i < len(default_bias):
+                    self.car_bias[i] = default_bias[i]
+                else:
+                    self.car_bias[i] = 0  # 默认偏置为0
+        else:
+            # 将vehicle_id映射到索引
+            self.car_bias = {}
+            for i, vehicle_id in enumerate(vehicle_ids):
+                if vehicle_id in car_bias:
+                    self.car_bias[i] = car_bias[vehicle_id]
+                else:
+                    self.car_bias[i] = 0
+        
+        # 设置端口
+        self.car_port = car_port
+        self.camera_rotation = camera_rotation
+        # 保存vehicle_ids用于其他功能
+        self.vehicle_ids = vehicle_ids
+    
+    def get_vehicle_config(self) -> Dict:
+        """
+        获取当前车辆配置信息
+        
+        Returns:
+            包含车辆配置信息的字典
+        """
+        return {
+            "vehicle_ids": self.vehicle_ids,
+            "car_topics": self.car_topics,
+            "car_ips": self.car_ips,
+            "car_bias": self.car_bias,
+            "car_port": self.car_port
+        }
+    
+    def update_vehicle_config(self, 
+                            vehicle_ids: Optional[List[int]] = None,
+                            car_ips: Optional[Dict[int, str]] = None,
+                            car_bias: Optional[Dict[int, float]] = None,
+                            car_port: Optional[int] = None):
+        """
+        更新车辆配置（仅在系统停止时允许）
+        
+        Args:
+            vehicle_ids: 新的车辆ID列表
+            car_ips: 新的小车IP配置
+            car_bias: 新的小车偏置配置
+            car_port: 新的通信端口
+        
+        Raises:
+            RuntimeError: 如果系统正在运行
+        """
+        if self.state == SystemState.RUNNING:
+            raise RuntimeError("Cannot update vehicle config while system is running")
+        
+        if vehicle_ids is not None:
+            if car_port is not None:
+                port = car_port
+            else:
+                port = self.car_port
+            
+            self._setup_vehicle_config(vehicle_ids, car_ips, car_bias, port)
+        elif car_port is not None:
+            self.car_port = car_port
+            
     def set_callbacks(self, status_callback: Callable = None, 
                      error_callback: Callable = None,
                      progress_callback: Callable = None):
@@ -339,7 +451,35 @@ class VehicleControlSystem:
         """验证JSON数据格式"""
         required_keys = ["all_vehicles", "obstacle", "destination"]
         return all(key in data for key in required_keys)
+    
+    def optimize_path(self, path: List[Tuple[float, float]]) -> List[Tuple[float, float]]:   
+        """
+        合并路径中方向不变的连续点，仅保留拐点和端点
+        适用于上下左右移动的路径点
+        """
+        if len(path) <= 2:
+            return path.copy()
+
+        optimized = [path[0]]  # 起点一定保留
+
+        prev_dx = path[1][0] - path[0][0]
+        prev_dy = path[1][1] - path[0][1]
+
+        for i in range(1, len(path) - 1):
+            curr_dx = path[i + 1][0] - path[i][0]
+            curr_dy = path[i + 1][1] - path[i][1]
+
+            # 如果方向变化了，保留这个拐点
+            if (curr_dx, curr_dy) != (prev_dx, prev_dy):
+                optimized.append(path[i])
             
+            prev_dx = curr_dx
+            prev_dy = curr_dy
+
+        optimized.append(path[-1])  # 终点一定保留
+
+        return optimized         
+    
     def plan_paths(self, command: str = "") -> bool:
         """路径规划"""
         try:
@@ -352,18 +492,26 @@ class VehicleControlSystem:
 
             # 调用LLM (可选)
             function_list = test.call_LLM(self.grid_vehicles, self.grid_destinations, command)
-            
+            print
             if function_list is None:
                 self._report_error("LLM调用失败")
                 return False
             else:
                 # 解释LLM结果并生成路径
-                self.path_results = test.Interpret_function_list(function_list, obj)
+                self.grid_path_results = test.Interpret_function_list(function_list, obj)
 
-            if not self.path_results:
-                self._report_error("路径规划失败")
-                return False
-            
+                if not self.grid_path_results:
+                    self._report_error("路径规划失败")
+                    return False
+                
+                # 将栅格路径映射为实际坐标路径
+                for i, path_dict in enumerate(self.grid_path_results):
+                    for car_id, grid_path in path_dict.items():
+                        # grid_path = self.optimize_path(grid_path)
+                        img_path = batch_convert_to_image_coordinates(grid_path)
+                        real_path = self.mapper.batch_map_to_real_coords(img_path)
+                        self.path_results.append({self.car_id_mapping.get(car_id):real_path})
+
             for i in range(len(self.path_results)):
                 self._create_trajectory_planners(task_index=i)
                 # 等待任务完成 ...
@@ -399,7 +547,8 @@ class VehicleControlSystem:
                     min_speed=10.0,
                     goal_tolerance=80,
                     max_angle_control=60.0,
-                    bias=car_bias
+                    bias=car_bias,
+                    name=f"vehicle_{vehicle_id}"
                 )
                 self.trajectory_planners[vehicle_id] = planner
 
@@ -408,7 +557,7 @@ class VehicleControlSystem:
                 self.state_receivers[vehicle_id] = receiver
 
                 # 订阅 ROS 话题
-                topic_index = self.car_id_mapping.get(vehicle_id, vehicle_id)
+                topic_index = self.car_id_mapping.get(vehicle_id)
                 if topic_index < len(self.car_topics):
                     pose_topic = self.car_topics[topic_index]
                     twist_topic = pose_topic.replace('/pose', '/twist')
@@ -416,6 +565,11 @@ class VehicleControlSystem:
                     rospy.Subscriber(pose_topic, PoseStamped, receiver.pose_callback, queue_size=1)
                     rospy.Subscriber(twist_topic, TwistStamped, receiver.twist_callback, queue_size=1)
 
+    def get_actual_trajectory(self, vehicle_id: int) -> List[Tuple[float, float]]:
+        controller = self.trajectory_planners.get(vehicle_id)
+        if controller:
+            return controller.get_trajectory()
+        return []
     
     def execute_mission(self) -> bool:
         """执行任务"""
@@ -563,7 +717,33 @@ class VehicleControlSystem:
         except Exception as e:
             print(f"获取{topic}位置失败: {str(e)}")
             return None
-            
+        
+    def _match_vehicles_by_position(self,
+                                 image_real_coords: List[Tuple[float, float]],
+                                 ros_coords: List[Tuple[float, float]]) -> Dict[int, int]:
+        """
+        通过距离最小原则，匹配图像检测到的小车 ID 与 ROS 小车 ID。
+        返回映射关系：{检测到的ID: ROS ID}
+        """
+        mapping = {}
+        used_ros = set()
+
+        for img_id, img_coord in enumerate(image_real_coords):
+            min_dist = float('inf')
+            matched_ros_id = -1
+            for ros_id, ros_coord in enumerate(ros_coords):
+                if ros_id in used_ros:
+                    continue
+                dist = np.linalg.norm(np.array(img_coord) - np.array(ros_coord))
+                if dist < min_dist:
+                    min_dist = dist
+                    matched_ros_id = ros_id
+            if matched_ros_id != -1:
+                mapping[img_id] = matched_ros_id
+                used_ros.add(matched_ros_id)
+
+        return mapping        
+    
     def _establish_vehicle_id_mapping(self, vehicle_img_coords: List, vehicle_real_coords: List):
         """建立小车ID映射关系"""
         self.car_id_mapping = {}
@@ -590,59 +770,64 @@ class VehicleControlSystem:
     def _update_vehicle_positions(self) -> bool:
         """更新小车位置"""
         try:
-            # 拍摄当前图像
+            # 1. 拍摄当前图像
             timestamp = int(time.time())
             image_path = f"{self.capture_dir}/capture_{timestamp}.jpg"
             self.camera.capture_rotated_image(file_path=image_path, angle=self.camera_rotation)
-            
-            # YOLO检测
+
+            # 2. YOLO检测
             results = predict.detect_objects(path=image_path, show_results=False)
-            # 保存检测结果
             predict.save_detection_results(results, save_dir="detection_results")
-            
+
             if not results or not results[0]:
                 print("未检测到小车，等待下一次检测...")
                 return True
-                
+
+            # 3. 提取图像中心坐标
             vehicle_img_coords = results[0].get('all_vehicles', [])
             if not vehicle_img_coords:
                 print("未检测到小车，等待下一次检测...")
                 return True
-                
-            for i, img_coord in enumerate(vehicle_img_coords):
-                vehicle_img_coords[i] = self.get_center_from_bbox(img_coord)
 
-            # 获取ROS实际坐标
-            vehicle_real_coords = []
+            vehicle_img_coords = [self.get_center_from_bbox(bbox) for bbox in vehicle_img_coords]
+
+            # 4. 映射为实际坐标（图像到实际世界）
+            mapped_real_coords = [self.mapper.map_to_real_coords(coord) for coord in vehicle_img_coords]
+            time.sleep(0.3)
+            # 5. 获取 ROS 实时坐标
+            vehicle_ros_coords = []
             for topic in self.car_topics:
                 real_pos = self._get_car_position(topic)
                 if real_pos is None:
                     return False
-                vehicle_real_coords.append(real_pos)
-                
-            # 更新小车信息
-            for i, vehicle in enumerate(self.vehicles):
-                if i < len(vehicle_img_coords):
-                    vehicle['img_coord'] = vehicle_img_coords[i]
-                    vehicle['real_coord'] = self.mapper.map_to_real_coords(vehicle_img_coords[i])
-                if i < len(vehicle_real_coords):
-                    vehicle['ros_coord'] = vehicle_real_coords[i]
-                    
-            # 计算和打印误差
-            for i, vehicle in enumerate(self.vehicles):
-                if 'real_coord' in vehicle and 'ros_coord' in vehicle:
-                    real_coord = vehicle['real_coord']
-                    ros_coord = vehicle['ros_coord']
-                    error = ((real_coord[0] - ros_coord[0])**2 + 
-                            (real_coord[1] - ros_coord[1])**2)**0.5
-                    print(f"小车{i+1}: 映射坐标={real_coord}, ROS坐标={ros_coord}, 误差={error:.2f}mm")
-                    
+                vehicle_ros_coords.append(real_pos)
+
+            # 6. 匹配图像ID → ROS小车ID，更新 car_id_mapping
+            self.car_id_mapping = self._match_vehicles_by_position(mapped_real_coords, vehicle_ros_coords)
+
+            # 7. 更新 self.vehicles[] 信息
+            for img_id, img_coord in enumerate(vehicle_img_coords):
+                if img_id in self.car_id_mapping:
+                    ros_id = self.car_id_mapping[img_id]
+                    if ros_id < len(self.vehicles):
+                        self.vehicles[ros_id]['img_coord'] = img_coord
+                        self.vehicles[ros_id]['real_coord'] = mapped_real_coords[img_id]
+                        self.vehicles[ros_id]['ros_coord'] = vehicle_ros_coords[ros_id]
+
+            # 8. 打印误差信息
+            for img_id, real_coord in enumerate(mapped_real_coords):
+                if img_id in self.car_id_mapping:
+                    ros_id = self.car_id_mapping[img_id]
+                    ros_coord = vehicle_ros_coords[ros_id]
+                    error = np.linalg.norm(np.array(real_coord) - np.array(ros_coord))
+                    print(f"小车（图像ID:{img_id} → ROS ID:{ros_id}）: 映射坐标={real_coord}, ROS坐标={ros_coord}, 误差={error:.2f}mm")
+
             return True
-            
+
         except Exception as e:
             print(f"更新小车位置失败: {str(e)}")
             return False
-            
+       
     def _check_mission_completion(self) -> bool:
         """检查任务完成状态"""
         # 检查所有轨迹规划器是否完成
@@ -673,7 +858,7 @@ if __name__ == "__main__":
     
     try:
         # 启动任务
-        if system.start_mission("小车0去往目的地0"):
+        if system.start_mission("小车0清扫目的地0"):
             print("任务启动成功")
             
             # 等待任务完成或用户中断

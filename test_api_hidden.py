@@ -65,12 +65,25 @@ def Interpret_function_list(function_list:List, obj):
 
     Args:
         function_list:大模型给出的函数调用列表
+        obj: 包含待调用方法的对象
     """
-    result = []
+    results = []
     for fun in function_list:
-        fun="obj."+fun
-        result = result + eval(fun)
-    return result
+        try:
+            # 构造方法调用字符串并执行
+            method_call = f"obj.{fun}"
+            result = eval(method_call)
+            
+            # 确保每个结果都是字典形式
+            if not isinstance(result, dict):
+                result = {"result": result}
+                
+            results.append(result)
+        except Exception as e:
+            # 如果调用失败，记录错误信息
+            results.append({"error": str(e), "failed_function": fun})
+    
+    return results
 
 if __name__=="__main__":
     vehicles=[
@@ -88,7 +101,7 @@ if __name__=="__main__":
         [[11, 8], [11, 5], [13, 5], [13, 8]],
         [[3, 5], [3, 3], [5, 3], [5, 5]]
     ]
-    command="让车辆0到达目的地1。"
+    command="让车辆0，1包围目的地1,再让车辆0到达目的地0"
     obj=algorithms.PathPlanner(vehicles,obstacles,destinations)
     function_list=call_LLM(vehicles,destinations,command)
     if function_list is None:

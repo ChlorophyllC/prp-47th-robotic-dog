@@ -6,3 +6,6 @@ detection_results/
 MvSdkLog/
 _pycache_/
 blank.py
+captures/
+trajectory_logs/
+coordinate_mapper.pkl

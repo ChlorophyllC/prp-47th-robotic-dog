@@ -105,62 +105,57 @@ class PathPlanner:
                 return False
         return True
 
-    def a_star_path_planning(self, current_vehicle_index: int, destination_index: int, max_iter: int = 10000, dict_mode = True, dest_point: Tuple[float, float] = None) -> List[Tuple[float, float]]:
-        """
-        A* path planning algorithm to navigate from a vehicle to a destination, avoiding obstacles.
-        
-        Args:
-            current_vehicle_index: 当前车辆的索引
-            destination_index: 目标目的地的索引
-            max_iter: 最大迭代次数
-        
-        Returns:
-            A list of (x, y) tuples representing the path from vehicle's center to destination.
-        """
-        def is_collision(point: Tuple[float, float], buffer: float = 1.0) -> bool:
-            """Check collision with all obstacles"""
-            all_obstacles = self.get_all_obstacles(current_vehicle_index, destination_index)
-            
+    def a_star_path_planning(
+        self,
+        current_vehicle_index: int,
+        destination_index: int = 0,
+        max_iter: int = 10000,
+        dict_mode: bool = True,
+        dest_point: Tuple[float, float] = None,
+    ) -> List[Tuple[int, int]]:
+
+        def simplify_path(path: List[Tuple[int, int]]) -> List[Tuple[int, int]]:
+            if len(path) < 3:
+                return path
+            simplified = [path[0]]
+            dx_prev = path[1][0] - path[0][0]
+            dy_prev = path[1][1] - path[0][1]
+            for i in range(1, len(path) - 1):
+                dx = path[i + 1][0] - path[i][0]
+                dy = path[i + 1][1] - path[i][1]
+                if (dx, dy) != (dx_prev, dy_prev):
+                    simplified.append(path[i])
+                dx_prev, dy_prev = dx, dy
+            simplified.append(path[-1])
+            return simplified
+
+        all_obstacles = self.get_all_obstacles(current_vehicle_index, destination_index)
+
+        def is_collision(point: Tuple[int, int], buffer: float = 10.0) -> bool:
             for obs in all_obstacles:
                 if self.point_to_rect_distance(point, obs) < buffer:
                     return True
             return False
 
         def heuristic(a, b):
-            """Manhattan distance compatible with floats"""
-            return abs(a[0] - b[0]) + abs(a[1] - b[1])
+            return math.hypot(a[0] - b[0], a[1] - b[1])
 
-        # Get start and goal positions
         current_vehicle = self.vehicles[current_vehicle_index]
         vehicle_width = int(max(p[0] for p in current_vehicle) - min(p[0] for p in current_vehicle))
         vehicle_height = int(max(p[1] for p in current_vehicle) - min(p[1] for p in current_vehicle))
         vehicle_max_size = max(vehicle_width, vehicle_height)
-        start = self.get_rect_center(current_vehicle)
-        
-        if dest_point is not None:
-            goal = dest_point
-        else:
-            target_destination = self.destinations[destination_index]
-            goal = self.get_rect_center(target_destination)
-        
-        # Calculate reasonable boundaries
-        all_points = []
-        # Add all vehicle corner points
-        for vehicle in self.vehicles:
-            all_points.extend(vehicle)
-        # Add all destination corner points
-        for dest in self.destinations:
-            all_points.extend(dest)
-        # Add all obstacle corner points
-        for obs in self.obstacles:
-            all_points.extend(obs)
-        
-        min_x = min(p[0] for p in all_points) - 5
-        max_x = max(p[0] for p in all_points) + 5
-        min_y = min(p[1] for p in all_points) - 5
-        max_y = max(p[1] for p in all_points) + 5
 
-        movements = [(0, 1), (0, -1), (-1, 0), (1, 0)]
+        start = tuple(map(int, map(round, self.get_rect_center(current_vehicle))))
+        goal = tuple(map(int, map(round, dest_point))) if dest_point else tuple(map(int, map(round, self.get_rect_center(self.destinations[destination_index]))))
+
+        min_x, max_x = 0, 144
+        min_y, max_y = 0, 108
+
+        movements = [
+            (0, 1), (0, -1), (-1, 0), (1, 0),
+            (-1, 1), (1, 1), (-1, -1), (1, -1)
+        ]
+
         open_set = []
         heapq.heappush(open_set, (0, start))
         came_from = {}
@@ -171,110 +166,134 @@ class PathPlanner:
 
         while open_set and iter_count < max_iter:
             iter_count += 1
-            current_f, current = heapq.heappop(open_set)
+            _, current = heapq.heappop(open_set)
 
-            # Floating point comparison needs tolerance
-            if math.isclose(current[0], goal[0], abs_tol=0.5) and math.isclose(current[1], goal[1], abs_tol=0.5):
+            if current == goal:
                 path = [current]
                 while current in came_from:
                     current = came_from[current]
                     path.append(current)
-
-                if dict_mode:
-                    return {current_vehicle_index: path[::-1]}
-                
-                return path[::-1]
+                path.reverse()
+                # simplified = simplify_path(path)
+                return {current_vehicle_index: path} if dict_mode else path
 
             closed_set.add(current)
-            
+
             for dx, dy in movements:
                 neighbor = (current[0] + dx, current[1] + dy)
-                
-                # Stricter boundary check
                 if not (min_x <= neighbor[0] <= max_x and min_y <= neighbor[1] <= max_y):
                     continue
-                    
                 if neighbor in closed_set:
                     continue
-                    
                 if is_collision(neighbor, vehicle_max_size):
                     continue
-                    
-                tentative_g = g_score[current] + 1
-                
+
+                step_cost = math.hypot(dx, dy)
+                tentative_g = g_score[current] + step_cost
+
                 if neighbor not in g_score or tentative_g < g_score[neighbor]:
                     came_from[neighbor] = current
                     g_score[neighbor] = tentative_g
                     f_score[neighbor] = tentative_g + heuristic(neighbor, goal)
                     heapq.heappush(open_set, (f_score[neighbor], neighbor))
 
-        print(f"Warning: A* reached max iterations ({max_iter}) or no path found")
-        return []
-
-    def encirclement_algorithm(self, destination_index: int, vehicle_indices: List[int] = None, 
-                             min_distance: float = 3.0, buffer: float = 1.0) -> Dict[int, List[Tuple[float, float]]]:
+        print(f"Warning: A* reached max iterations ({max_iter}) or no path found.")
+        return {current_vehicle_index: []} if dict_mode else []
+    def encirclement_algorithm(self, destination_index: int, selected_vehicle_indices: List[int] = None, 
+                         min_distance: float = 10.0, buffer: float = 1.0) -> Dict[int, List[Tuple[float, float]]]:
         """
         Helper function: Evenly distribute vehicles around destination.
         
         Args:
             destination_index: 目标目的地的索引
-            vehicle_indices: 参与包围的车辆索引列表，如果为None则使用所有车辆
+            selected_vehicle_indices: 参与包围的车辆索引列表，如果为None则使用所有车辆
             min_distance: 最小距离
             buffer: 安全缓冲区
             
         Returns:
             Dict[int, List[Tuple[float, float]]]: 字典，键为车辆索引，值为该车辆的路径
         """
-        if vehicle_indices is None:
-            vehicle_indices = list(range(len(self.vehicles)))
+        if selected_vehicle_indices is None:
+            selected_vehicle_indices = list(range(len(self.vehicles)))
 
         dest_rect = self.destinations[destination_index]
         dest_center = self.get_rect_center(dest_rect)
-        
-        # 计算目标矩形尺寸
+
+        # 获取目标尺寸
         xs = [p[0] for p in dest_rect]
         ys = [p[1] for p in dest_rect]
         width = max(xs) - min(xs)
         height = max(ys) - min(ys)
-        
-        # 基础半轴长度（椭圆的形式）
-        a = width / 2 + min_distance + buffer  # x 方向半轴
-        b = height / 2 + min_distance + buffer  # y 方向半轴
-        
-        num_vehicles = len(vehicle_indices)
+        a = width / 2 + min_distance + buffer
+        b = height / 2 + min_distance + buffer
+
+        num_vehicles = len(selected_vehicle_indices)
         angles = [i * (2 * math.pi / num_vehicles) for i in range(num_vehicles)]
-        
-            # 先生成一圈包围点（椭圆上）
         candidate_points = [(dest_center[0] + a * math.cos(angle),
                             dest_center[1] + b * math.sin(angle)) for angle in angles]
 
-        # 给每辆车分配离它最近的包围点（不可重复）
-        remaining_points = candidate_points.copy()
+        # 计算每辆车离 dest_center 的距离，用于排序
+        vehicle_dists = []
+        for vehicle_idx in selected_vehicle_indices:
+            center = self.get_rect_center(self.vehicles[vehicle_idx])
+            dist = math.hypot(center[0] - dest_center[0], center[1] - dest_center[1])
+            vehicle_dists.append((dist, vehicle_idx))
+
+        vehicle_dists.sort()  # 靠得近的优先分配
+
+        used_points = set()
         assignment = {}
 
-        for vehicle_idx in vehicle_indices:
+        for _, vehicle_idx in vehicle_dists:
             vehicle_center = self.get_rect_center(self.vehicles[vehicle_idx])
-            closest_point = min(remaining_points,
-                                key=lambda pt: math.hypot(pt[0] - vehicle_center[0], pt[1] - vehicle_center[1]))
-            
-            # 尝试微调该点位置，避免碰撞
-            angle = math.atan2(closest_point[1] - dest_center[1], closest_point[0] - dest_center[0])
-            for delta in range(5):
-                scale = 1.0 + 0.1 * delta
-                test_x = dest_center[0] + scale * a * math.cos(angle)
-                test_y = dest_center[1] + scale * b * math.sin(angle)
+
+            # 寻找离这辆车最近、尚未使用的点
+            closest_point = min(
+                (pt for pt in candidate_points if pt not in used_points),
+                key=lambda pt: math.hypot(pt[0] - vehicle_center[0], pt[1] - vehicle_center[1])
+            )
+            used_points.add(closest_point)
+
+            base_angle = math.atan2(closest_point[1] - dest_center[1], closest_point[0] - dest_center[0])
+            found_position = None
+
+            # 尝试距离缩放
+            for scale in [1.0, 1.1, 1.2, 1.3, 1.4, 1.5]:
+                test_x = dest_center[0] + scale * a * math.cos(base_angle)
+                test_y = dest_center[1] + scale * b * math.sin(base_angle)
                 dx = test_x - vehicle_center[0]
                 dy = test_y - vehicle_center[1]
                 shifted_rect = [(p[0] + dx, p[1] + dy) for p in self.vehicles[vehicle_idx]]
-
                 if self.is_valid_position((test_x, test_y), shifted_rect, dest_center,
                                         min_distance, buffer, vehicle_idx, destination_index):
-                    assignment[vehicle_idx] = [(test_x, test_y)]
+                    found_position = (test_x, test_y)
                     break
-            else:
-                assignment[vehicle_idx] = [closest_point]  # fallback
 
-            remaining_points.remove(closest_point)  # 确保唯一使用
+            # 尝试角度旋转
+            if found_position is None:
+                for attempt in range(1, 361):
+                    for direction in [1, -1]:
+                        angle = base_angle + direction * math.radians(attempt)
+                        for scale in [1.0, 1.1, 1.2, 1.3, 1.4, 1.5]:
+                            test_x = dest_center[0] + scale * a * math.cos(angle)
+                            test_y = dest_center[1] + scale * b * math.sin(angle)
+                            dx = test_x - vehicle_center[0]
+                            dy = test_y - vehicle_center[1]
+                            shifted_rect = [(p[0] + dx, p[1] + dy) for p in self.vehicles[vehicle_idx]]
+                            if self.is_valid_position((test_x, test_y), shifted_rect, dest_center,
+                                                    min_distance, buffer, vehicle_idx, destination_index):
+                                found_position = (test_x, test_y)
+                                break
+                        if found_position:
+                            break
+                    if found_position:
+                        break
+
+            if found_position is None:
+                print(f"Warning: Could not find valid position for vehicle {vehicle_idx}, using fallback.")
+                found_position = closest_point
+
+            assignment[vehicle_idx] = [found_position]
 
         return assignment
 
@@ -326,23 +345,26 @@ class PathPlanner:
         path = self.a_star_path_planning(current_vehicle_index, destination_index, dict_mode=False, dest_point=closest_corner)
         
         # 从该角点开始生成 Z 字形路径
-        def generate_zigzag_path(start, dest, vehicle, step_size=None):
+        def generate_zigzag_path(start, dest, vehicle, step_size=None, overshoot: int = 1):
+            """
+            生成Z字形清扫路径，并在两端延伸overshoot段距离，防止过早掉头漏扫。
+            """
             path = []
             x, y = start
 
-            # 根据车辆尺寸设置步长
+            # 车辆尺寸推步长
             vehicle_width = int(max(p[0] for p in vehicle) - min(p[0] for p in vehicle))
             vehicle_height = int(max(p[1] for p in vehicle) - min(p[1] for p in vehicle))
             if step_size is None:
-                step_size = min(vehicle_width, vehicle_height)
-            
+                step_size = min(vehicle_width, vehicle_height) * 3
+
             # 边界框
             xs = [p[0] for p in dest]
             ys = [p[1] for p in dest]
             min_x, max_x = min(xs), max(xs)
             min_y, max_y = min(ys), max(ys)
-            
-            # 起点位置判断（增加容差）
+
+            # 起点方向估计
             if math.isclose(x, min_x, abs_tol=1.0) and math.isclose(y, min_y, abs_tol=1.0):
                 x_dir, y_dir = 1, 1
             elif math.isclose(x, max_x, abs_tol=1.0) and math.isclose(y, min_y, abs_tol=1.0):
@@ -354,33 +376,60 @@ class PathPlanner:
             else:
                 x_dir, y_dir = 1, 1  # 默认从左下角向右上角
 
-            # 是否水平优先
             horizontal_priority = (max_x - min_x) >= (max_y - min_y)
 
             if horizontal_priority:
                 y_line = y
                 while (y_dir > 0 and y_line <= max_y) or (y_dir < 0 and y_line >= min_y):
-                    # 当前行扫描
                     x_pos = min_x if x_dir > 0 else max_x
                     line = []
+
+                    # 向前延伸一段 overshoot（前扫）
+                    for i in range(overshoot, 0, -1):
+                        offset = x_pos - x_dir * i * step_size
+                        if min_x - overshoot * step_size <= offset <= max_x + overshoot * step_size:
+                            line.append((offset, y_line))
+
+                    # 正常扫描线
                     while (x_dir > 0 and x_pos <= max_x) or (x_dir < 0 and x_pos >= min_x):
                         line.append((x_pos, y_line))
                         x_pos += x_dir * step_size
+
+                    # 后扫 overshoot
+                    for i in range(1, overshoot + 1):
+                        offset = x_pos
+                        if min_x - overshoot * step_size <= offset <= max_x + overshoot * step_size:
+                            line.append((offset, y_line))
+                        x_pos += x_dir * step_size
+
                     path.extend(line)
-                    
                     y_line += y_dir * vehicle_height
                     x_dir *= -1
             else:
                 x_col = x
                 while (x_dir > 0 and x_col <= max_x) or (x_dir < 0 and x_col >= min_x):
-                    # 当前列扫描
                     y_pos = min_y if y_dir > 0 else max_y
                     col = []
+
+                    # 前扫
+                    for i in range(overshoot, 0, -1):
+                        offset = y_pos - y_dir * i * step_size
+                        if min_y - overshoot * step_size <= offset <= max_y + overshoot * step_size:
+                            col.append((x_col, offset))
+
+                    # 正常列
                     while (y_dir > 0 and y_pos <= max_y) or (y_dir < 0 and y_pos >= min_y):
                         col.append((x_col, y_pos))
                         y_pos += y_dir * step_size
+
+                    # 后扫
+                    for i in range(1, overshoot + 1):
+                        offset = y_pos
+                        if min_y - overshoot * step_size <= offset <= max_y + overshoot * step_size:
+                            col.append((x_col, offset))
+                        y_pos += y_dir * step_size
+
                     path.extend(col)
-                    
                     x_col += x_dir * vehicle_width
                     y_dir *= -1
 
@@ -471,36 +520,32 @@ class PathPlanner:
         """
         # Calculate encirclement positions for selected vehicles
         target_positions = self.encirclement_algorithm(destination_index, selected_vehicle_indices)
-        
+
         # Plan path for each selected vehicle
         all_paths = {}
         for vehicle_idx in selected_vehicle_indices:
-            # 创建临时目的地用于A*规划
-            temp_dest_index = len(self.destinations)
-            target_pos = target_positions[vehicle_idx][0]  # 取出位置（之前是单点路径）
-            self.destinations.append([target_pos, target_pos, target_pos, target_pos])  # 临时添加目标位置作为目的地
+            target_pos = target_positions[vehicle_idx][0]  
             
-            path = self.a_star_path_planning(vehicle_idx, temp_dest_index, dict_mode=False)
+            path = self.a_star_path_planning(vehicle_idx, dest_point=target_pos, destination_index=None, dict_mode=False)
             all_paths[vehicle_idx] = path
-            
-            # 移除临时目的地
-            self.destinations.pop()
         
         return all_paths
     
 # 初始化
-# vehicles=[[[41,23],[41,20],[45,20],[45,23]],[[43,34],[43,30],[47,30],[47,34]]]
-# obstacles=[[[17,38],[17,30],[28,30],[28,38]]]
-# destinations=[[[17,19],[17,7],[29,7],[29,19]]]
+if __name__ == "__main__":
+    vehicles=[[[47, 83], [47, 76], [53, 76], [53, 83]], [[47, 45], [47, 39], [53, 39], [53, 45]], [[68, 24], [68, 18], [73, 18], [73, 24]]]
+    obstacles=[[[34,34],[34,13],[49,13],[49,34]]]
+    destinations=[[[59,63],[59,40],[76,40],[76,63]]]
 
-# planner = PathPlanner(vehicles, obstacles, destinations)
+    planner = PathPlanner(vehicles, obstacles, destinations)
 
 # # 使用A*规划从车辆0到目的地1的路径
 # path = planner.a_star_path_planning(current_vehicle_index=0, destination_index=0)
-# # 车辆0和2包围目的地0
-# encirclement_path = planner.encirclement_implement(destination_index=0, selected_vehicle_indices=[0, 1])
+# # 车辆012包围目的地0
+    encirclement_path = planner.encirclement_implement(destination_index=0, selected_vehicle_indices=[0, 1, 2])
+    # path = planner.a_star_path_planning(current_vehicle_index=0, dest_point=(32.0, 34.0))
 # # 车辆0 清扫目的地0
 # path_ = planner.sweep(current_vehicle_index=0, destination_index=0)
-# print("A* Path:", path)
+    # print("A* Path:", path)
 # print("Sweep Path:", path_)
-# print("Encirclement Path:", encirclement_path)
+    print("Encirclement Path:", encirclement_path)

@@ -12,12 +12,13 @@ from matplotlib.patches import Rectangle
 import matplotlib.image as mpimg
 import matplotlib
 from system import VehicleControlSystem
-
+from camera import HikvisionCamera as Camera
+from predict import batch_convert_to_image_coordinates
 class VehiclePlannerGUI:
     def __init__(self, root):
         self.root = root
         self.root.title("车辆路径规划系统")
-        self.root.geometry("1200x800")
+        self.root.geometry("1600x1200")
         matplotlib.rcParams['font.family'] = 'WenQuanYi Micro Hei'
         
         # 数据存储
@@ -37,6 +38,16 @@ class VehiclePlannerGUI:
         self.vehicle_system = VehicleControlSystem()
         self.setup_system_callbacks()
         
+        # 车辆配置参数
+        self.vehicle_ids = [1, 2, 3]  # 默认值
+        self.car_ips = {0: "192.168.1.208", 1: "192.168.1.205", 2: "192.168.1.207"}  # 默认值
+        self.car_bias = {0: -5, 1: 7, 2: 0}  # 默认值
+        self.car_port = 12345  # 默认值
+        self.camera_rotation = -21
+        
+        # 首次检测标志
+        self.first_detection_done = False
+
     def create_widgets(self):
         # 创建主框架
         main_frame = ttk.Frame(self.root)
@@ -65,18 +76,49 @@ class VehiclePlannerGUI:
         ttk.Button(file_frame, text="导入JSON文件", 
                   command=self.load_json_file).pack(fill=tk.X)
         
-        # 自动检测控制区域
-        detect_frame = ttk.LabelFrame(parent, text="自动检测控制", padding=10)
+        # 车辆配置区域
+        config_frame = ttk.LabelFrame(parent, text="车辆配置", padding=10)
+        config_frame.pack(fill=tk.X, pady=(0, 10))
+        
+        # Vehicle IDs 输入
+        ttk.Label(config_frame, text="Vehicle IDs (逗号分隔):").pack(anchor=tk.W)
+        self.vehicle_ids_entry = tk.Entry(config_frame, width=35)
+        self.vehicle_ids_entry.pack(fill=tk.X, pady=(0, 5))
+        self.vehicle_ids_entry.insert(0, "1,2,3")
+        
+        # Car IPs 输入
+        ttk.Label(config_frame, text="Car IPs (格式: id1:ip1,id2:ip2):").pack(anchor=tk.W)
+        self.car_ips_entry = tk.Entry(config_frame, width=35)
+        self.car_ips_entry.pack(fill=tk.X, pady=(0, 5))
+        self.car_ips_entry.insert(0, "1:192.168.1.208,2:192.168.1.205,3:192.168.1.207")
+        
+        # Car Bias 输入
+        ttk.Label(config_frame, text="Car Bias (格式: id1:bias1,id2:bias2):").pack(anchor=tk.W)
+        self.car_bias_entry = tk.Entry(config_frame, width=35)
+        self.car_bias_entry.pack(fill=tk.X, pady=(0, 5))
+        self.car_bias_entry.insert(0, "1:-5,2:7,3:0")
+        
+        # Car Port 输入
+        ttk.Label(config_frame, text="Car Port:").pack(anchor=tk.W)
+        self.car_port_entry = tk.Entry(config_frame, width=35)
+        self.car_port_entry.pack(fill=tk.X, pady=(0, 5))
+        self.car_port_entry.insert(0, "12345")
+        
+        # 应用配置按钮
+        ttk.Button(config_frame, text="应用配置", 
+                command=self.apply_vehicle_config).pack(fill=tk.X, pady=(5, 0))
+        
+        # 首次检测
+        detect_frame = ttk.LabelFrame(parent, text="首次检测", padding=10)
         detect_frame.pack(fill=tk.X, pady=(0, 10))
         
-        self.auto_detect_btn = ttk.Button(detect_frame, text="开始自动检测", 
-                                        command=self.toggle_auto_detection)
-        self.auto_detect_btn.pack(fill=tk.X)
+        self.first_detect_btn = ttk.Button(detect_frame, text="开始首次检测", 
+                                        command=self.start_first_detection)
+        self.first_detect_btn.pack(fill=tk.X, pady=(0, 5))
         
-        self.file_status = ttk.Label(file_frame, text="未导入文件", 
-                                   foreground="red")
-        self.file_status.pack(pady=(5, 0))
-        
+        self.detection_status = ttk.Label(detect_frame, text="未进行首次检测", 
+                                        foreground="orange")
+        self.detection_status.pack(pady=(5, 0))
         # 数据显示区域
         data_frame = ttk.LabelFrame(parent, text="数据信息", padding=10)
         data_frame.pack(fill=tk.X, pady=(0, 10))
@@ -86,10 +128,6 @@ class VehiclePlannerGUI:
         
         system_frame = ttk.LabelFrame(parent, text="系统控制", padding=10)
         system_frame.pack(fill=tk.X, pady=(0, 10))
-
-        self.start_mission_btn = ttk.Button(system_frame, text="启动任务", 
-                                        command=self.start_mission)
-        self.start_mission_btn.pack(fill=tk.X, pady=(0, 5))
 
         self.stop_mission_btn = ttk.Button(system_frame, text="停止任务", 
                                         command=self.stop_mission, state=tk.DISABLED)
@@ -126,6 +164,136 @@ class VehiclePlannerGUI:
         # 初始化空图
         self.update_visualization()
 
+    def apply_vehicle_config(self):
+        """应用车辆配置"""
+        try:
+            # 解析 vehicle_ids
+            vehicle_ids_str = self.vehicle_ids_entry.get().strip()
+            if vehicle_ids_str:
+                self.vehicle_ids = [int(x.strip()) for x in vehicle_ids_str.split(',')]
+            
+            # 解析 car_ips
+            car_ips_str = self.car_ips_entry.get().strip()
+            if car_ips_str:
+                car_ips_dict = {}
+                for pair in car_ips_str.split(','):
+                    if ':' in pair:
+                        vehicle_id, ip = pair.split(':', 1)
+                        car_ips_dict[int(vehicle_id.strip())] = ip.strip()
+                # 转换为索引映射
+                self.car_ips = {}
+                for i, vehicle_id in enumerate(self.vehicle_ids):
+                    if vehicle_id in car_ips_dict:
+                        self.car_ips[i] = car_ips_dict[vehicle_id]
+                    else:
+                        self.car_ips[i] = f"192.168.1.{200 + i}"
+            
+            # 解析 car_bias
+            car_bias_str = self.car_bias_entry.get().strip()
+            if car_bias_str:
+                car_bias_dict = {}
+                for pair in car_bias_str.split(','):
+                    if ':' in pair:
+                        vehicle_id, bias = pair.split(':', 1)
+                        car_bias_dict[int(vehicle_id.strip())] = float(bias.strip())
+                # 转换为索引映射
+                self.car_bias = {}
+                for i, vehicle_id in enumerate(self.vehicle_ids):
+                    if vehicle_id in car_bias_dict:
+                        self.car_bias[i] = car_bias_dict[vehicle_id]
+                    else:
+                        self.car_bias[i] = 0
+            
+            # 解析 car_port
+            car_port_str = self.car_port_entry.get().strip()
+            if car_port_str:
+                self.car_port = int(car_port_str)
+            
+            # 应用配置到系统
+            self.vehicle_system._setup_vehicle_config(
+                vehicle_ids=self.vehicle_ids,
+                car_ips={self.vehicle_ids[i]: self.car_ips[i] for i in range(len(self.vehicle_ids))},
+                car_bias={self.vehicle_ids[i]: self.car_bias[i] for i in range(len(self.vehicle_ids))},
+                car_port=self.car_port,
+                camera_rotation=self.camera_rotation
+            )
+            
+            messagebox.showinfo("成功", "车辆配置已应用")
+            self.update_result_text("车辆配置已更新")
+            
+        except Exception as e:
+            messagebox.showerror("错误", f"配置应用失败: {str(e)}")
+
+    def start_first_detection(self):
+        """开始首次检测"""
+        if self.first_detection_done:
+            messagebox.showinfo("提示", "首次检测已完成")
+            return
+        
+        try:
+            camera = Camera(device_index=0)
+    
+            # 列出所有设备
+            devices = camera.list_devices()
+    
+            if camera.connect():
+            # 拍摄单张图片
+                camera.capture_rotated_image("./captures/test_img.jpg", angle=self.camera_rotation)
+            
+            self.detect_latest_image()
+            self.first_detection_done = True
+            self.first_detect_btn.config(text="重新检测")
+            self.detection_status.config(text="首次检测已完成", foreground="green")
+            self.update_result_text("首次检测完成，已识别车辆ID")
+            
+        except Exception as e:
+            messagebox.showerror("错误", f"首次检测失败: {str(e)}")
+            self.detection_status.config(text="首次检测失败", foreground="red")
+        finally:
+        # 断开连接
+            camera.disconnect()
+
+    # 5. 修改 detect_latest_image 方法
+    def detect_latest_image(self):
+        """检测最新的图片"""
+        captures_dir = "./captures"
+        if not os.path.exists(captures_dir):
+            os.makedirs(captures_dir)
+            return
+        
+        # 获取目录中所有图片文件
+        image_files = [f for f in os.listdir(captures_dir) 
+                    if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
+        
+        if not image_files:
+            messagebox.showwarning("警告", "captures目录中没有找到图片文件")
+            return
+        
+        # 按修改时间排序，获取最新的图片
+        image_files.sort(key=lambda x: os.path.getmtime(os.path.join(captures_dir, x)))
+        latest_image = os.path.join(captures_dir, image_files[-1])
+        self.background = mpimg.imread(latest_image)
+
+        # 使用YOLO进行检测
+        result = predict.detect_objects(latest_image)
+        result_json = predict.save_detection_results(result, save_dir='./detection_results')
+        
+        if result_json:
+            self.load_json_file(result_json)
+            
+            # 更新UI
+            self.update_data_display()
+            self.update_visualization()
+            
+            # 记录日志
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            log_msg = f"{timestamp} 检测到最新图片: {latest_image}\n"
+            log_msg += f"车辆: {len(self.grid_vehicles)}, 障碍物: {len(self.grid_obstacles)}, 目的地: {len(self.grid_destinations)}\n"
+            log_msg += f"检测到的车辆ID: {list(range(len(self.grid_vehicles)))}\n"
+            log_msg += f"配置的Vehicle IDs: {self.vehicle_ids}\n"
+            self.result_text.insert(tk.END, log_msg + "\n")
+            self.result_text.see(tk.END)
+    
     def start_mission(self):
         """启动任务"""
         if not self.grid_vehicles or not self.grid_destinations:
@@ -139,7 +307,6 @@ class VehiclePlannerGUI:
         
         try:
             if self.vehicle_system.start_mission(command):
-                self.start_mission_btn.config(state=tk.DISABLED)
                 self.stop_mission_btn.config(state=tk.NORMAL)
                 self.update_result_text(f"任务启动成功: {command}")
 
@@ -154,7 +321,6 @@ class VehiclePlannerGUI:
         """停止任务"""
         try:
             self.vehicle_system.cleanup()
-            self.start_mission_btn.config(state=tk.NORMAL)
             self.stop_mission_btn.config(state=tk.DISABLED)
             self.update_result_text("任务已停止")
         except Exception as e:
@@ -165,32 +331,49 @@ class VehiclePlannerGUI:
         while self.vehicle_system.running:
             try:
                 # 检查系统是否有路径结果
-                if hasattr(self.vehicle_system, 'path_results') and self.vehicle_system.path_results:
+                if hasattr(self.vehicle_system, 'grid_path_results') and self.vehicle_system.grid_path_results:
                     # 在主线程中更新可视化
-                    self.root.after(0, self.update_path_visualization, self.vehicle_system.path_results)
+                    self.root.after(0, self.update_path_visualization, self.vehicle_system.path_results, self.vehicle_system.grid_path_results)
                     break
             except Exception as e:
                 print(f"监听路径结果出错: {e}")
             
             time.sleep(0.5)  # 每0.5秒检查一次
 
-    def update_path_visualization(self, path_results):
+    def update_path_visualization(self, path_results, grid_path_results):
         """更新路径可视化"""
         try:
             # 清除之前的绘图
             self.ax.clear()
+            self.detect_latest_image()
             self.update_visualization()
             
             # 绘制路径
-            if path_results:
-                self.draw_path_on_ax(path_results)
+            if grid_path_results:
+                self.draw_path_on_ax(grid_path_results)
                 result_text = "路径规划完成：\n" + "\n".join(str(res) for res in path_results)
                 self.result_text.insert(tk.END, result_text + "\n")
             
+            for vid in self.vehicle_ids:
+                traj = self.vehicle_system.get_actual_trajectory(vid)
+                if not traj:
+                    continue
+
+                # 映射世界坐标 → 图像 → 网格（假设有 mapper）
+                if hasattr(self.vehicle_system, "mapper") and self.vehicle_system.mapper.is_initialized:
+                    img_points = self.vehicle_system.mapper.batch_map_to_real_coords(traj)
+                    grid_points = batch_convert_to_image_coordinates(img_points)
+
+                    x_vals = [p[0] for p in grid_points]
+                    y_vals = [p[1] for p in grid_points]
+
+                    self.ax.plot(x_vals, y_vals, color='blue', alpha=0.8, linewidth=2, label=f'车辆{vid}实际轨迹')
+
             self.canvas.draw()
             
         except Exception as e:
-            self.update_result_text(f"可视化更新失败: {str(e)}")        
+            self.update_result_text(f"可视化更新失败: {str(e)}") 
+
     def load_json_file(self, file_path=None):
         """加载JSON文件"""
         if file_path is None:
@@ -228,79 +411,6 @@ class VehiclePlannerGUI:
         required_keys = ["all_vehicles", "obstacle", "destination"]
         return all(key in data for key in required_keys)
     
-    def start_auto_detection(self):
-        """启动自动检测线程"""
-        self.auto_detect_running = True
-        self.detection_thread = threading.Thread(target=self.auto_detect_loop, daemon=True)
-        self.detection_thread.start()
-    
-    def stop_auto_detection(self):
-        """停止自动检测"""
-        self.auto_detect_running = False
-        if self.detection_thread and self.detection_thread.is_alive():
-            self.detection_thread.join()
-    
-    def toggle_auto_detection(self):
-        """切换自动检测状态"""
-        if self.auto_detect_running:
-            self.stop_auto_detection()
-            self.auto_detect_btn.config(text="开始自动检测")
-        else:
-            self.start_auto_detection()
-            self.auto_detect_btn.config(text="停止自动检测")
-    
-    def auto_detect_loop(self):
-        """自动检测循环"""
-        while self.auto_detect_running:
-            try:
-                self.detect_latest_image()
-            except Exception as e:
-                print(f"自动检测出错: {e}")
-            
-            # 每隔5秒检测一次
-            for _ in range(5):
-                if not self.auto_detect_running:
-                    return
-                time.sleep(1)
-    
-    def detect_latest_image(self):
-        """检测最新的图片"""
-        captures_dir = "./captures"
-        if not os.path.exists(captures_dir):
-            os.makedirs(captures_dir)
-            return
-        
-        # 获取目录中所有图片文件
-        image_files = [f for f in os.listdir(captures_dir) 
-                      if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
-        
-        if not image_files:
-            return
-        
-        # 按修改时间排序，获取最新的图片
-        image_files.sort(key=lambda x: os.path.getmtime(os.path.join(captures_dir, x)))
-        latest_image = os.path.join(captures_dir, image_files[-1])
-        self.background = mpimg.imread(latest_image)
-
-        # 使用YOLO进行检测
-        result = predict.detect_objects(latest_image)
-        result_json = predict.save_detection_results(result, save_dir='./detection_results')
-        self.load_json_file(result_json)
-
-        # 更新数据
-        if result_json:
-            
-            # 更新UI
-            self.root.after(0, self.update_data_display)
-            self.root.after(0, self.update_visualization)
-            
-            # 记录日志
-            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            log_msg = f"{timestamp} 检测到最新图片: {latest_image}\n"
-            log_msg += f"车辆: {len(self.grid_vehicles)}, 障碍物: {len(self.grid_obstacles)}, 目的地: {len(self.grid_destinations)}\n"
-            self.result_text.insert(tk.END, log_msg + "\n")
-            self.result_text.see(tk.END)
-        
     def update_data_display(self):
         """更新数据显示"""
         self.data_text.delete(1.0, tk.END)
@@ -328,7 +438,7 @@ class VehiclePlannerGUI:
         self.ax.clear()
         # 绘制背景图片（如果有）
         if hasattr(self, 'background') and self.background is not None:
-            self.ax.imshow(self.background, extent=[0, 72, 0, 54], alpha=0.7, zorder=0)
+            self.ax.imshow(self.background, extent=[0, 144, 0, 108], alpha=0.7, zorder=0)
             
         if not self.grid_vehicles and not self.grid_obstacles and not self.grid_destinations:
             self.ax.text(0.5, 0.5, "请导入JSON文件", 
@@ -391,8 +501,8 @@ class VehiclePlannerGUI:
                            ha='center', va='center', fontweight='bold')
         
         # 设置图形属性
-        self.ax.set_xlim(0, 72)
-        self.ax.set_ylim(0, 54)
+        self.ax.set_xlim(0, 144)
+        self.ax.set_ylim(0, 108)
         self.ax.set_xlabel('X坐标')
         self.ax.set_ylabel('Y坐标')
         self.ax.set_title('车辆路径规划可视化')
@@ -490,8 +600,7 @@ class VehiclePlannerGUI:
         self.result_text.see(tk.END)
 
     def __del__(self):
-        """析构函数，确保线程停止"""
-        self.stop_auto_detection()
+        """析构函数"""
         if hasattr(self, 'vehicle_system'):
             self.vehicle_system.cleanup()
 
@@ -504,4 +613,4 @@ if __name__ == "__main__":
     main()
 
 # export ROS_MASTER_URI=http://192.168.1.214:11311
-# roslaunch vrpn_client_ros sample.launch server:=192.168.1.100
+# roslaunch vrpn_client_ros sample.launch server:=192.168.0.2

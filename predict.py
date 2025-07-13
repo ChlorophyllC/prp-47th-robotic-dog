@@ -74,6 +74,52 @@ def convert_to_grid_coordinates(x1, y1, x2, y2, image_width, image_height, grid_
     grid_y2 = max(0, min(grid_y2, grid_height - 1))
     
     return grid_x1, grid_y1, grid_x2, grid_y2
+from typing import List, Tuple
+
+def convert_to_image_coordinates(grid_x: float, grid_y: float, 
+                                 image_width: int = 1440, image_height: int = 1080, 
+                                 grid_width: int = 144, grid_height: int = 108) -> Tuple[float, float]:
+    """
+    将网格坐标转换为图像像素坐标（中心点位置）
+    
+    :param grid_x: 网格坐标 x（可以是 float）
+    :param grid_y: 网格坐标 y（可以是 float）
+    :return: 像素坐标 (x, y)，以图像左上角为原点
+    """
+    cell_width = image_width / grid_width
+    cell_height = image_height / grid_height
+
+    # 网格中心点对应的图像坐标
+    pixel_x = (grid_x + 0.5) * cell_width
+    pixel_y = image_height - (grid_y + 0.5) * cell_height
+
+    return pixel_x, pixel_y
+
+def batch_convert_to_image_coordinates(
+    grid_coords: List[Tuple[float, float]],
+    image_width: int = 1440,
+    image_height: int = 1080,
+    grid_width: int = 144,
+    grid_height: int = 108
+) -> List[Tuple[float, float]]:
+    """
+    批量将网格坐标列表转换为图像像素坐标列表（中心点位置）
+    
+    :param grid_coords: 网格坐标列表，如 [(x1, y1), (x2, y2), ...]
+    :param image_width: 图像宽度（像素）
+    :param image_height: 图像高度（像素）
+    :return: 图像坐标列表 [(px1, py1), (px2, py2), ...]
+    """
+    cell_width = image_width / grid_width
+    cell_height = image_height / grid_height
+
+    image_coords = []
+    for grid_x, grid_y in grid_coords:
+        pixel_x = (grid_x + 0.5) * cell_width
+        pixel_y = image_height - (grid_y + 0.5) * cell_height
+        image_coords.append((pixel_x, pixel_y))
+    
+    return image_coords
 
 def bbox_to_corners(x1, y1, x2, y2):
     """
@@ -179,7 +225,7 @@ def save_detection_results(detection_data, save_dir="detection_results"):
             x1, y1, x2, y2 = bbox
             # 转换为网格坐标
             grid_x1, grid_y1, grid_x2, grid_y2 = convert_to_grid_coordinates(
-                x1, y1, x2, y2, image_width, image_height, grid_width=72, grid_height=54
+                x1, y1, x2, y2, image_width, image_height, grid_width=144, grid_height=108
             )
             # 转换为四个角点
             corners = bbox_to_corners(grid_x1, grid_y1, grid_x2, grid_y2)

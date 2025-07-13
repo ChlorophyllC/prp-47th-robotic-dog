@@ -212,8 +212,8 @@ class VehiclePlannerGUI:
                            ha='center', va='center', fontweight='bold')
         
         # 设置图形属性
-        self.ax.set_xlim(0, 72)
-        self.ax.set_ylim(0, 54)
+        self.ax.set_xlim(0, 144)
+        self.ax.set_ylim(0, 108)
         self.ax.set_xlabel('X坐标')
         self.ax.set_ylabel('Y坐标')
         self.ax.set_title('车辆路径规划可视化')

@@ -429,14 +429,7 @@ if __name__ == "__main__":
         # 连接相机
         if camera.connect():
             # 拍摄单张图片
-            camera.capture_image("test_image.jpg")
-            
-            # 开始间隔拍摄（每5秒拍一张）
-            camera.start_interval_capture(interval_seconds=5.0, angle = -15, save_dir="./captures", name_prefix="auto")
-            
-            # 运行30秒后停止
-            time.sleep(30)
-            camera.stop_interval_capture()
+            camera.capture_rotated_image("test_image.jpg",angle=-21)
             
     except KeyboardInterrupt:
         print("用户中断")
