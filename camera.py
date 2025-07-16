@@ -429,7 +429,7 @@ if __name__ == "__main__":
         # 连接相机
         if camera.connect():
             # 拍摄单张图片
-            camera.capture_rotated_image("test_image.jpg",angle=-21)
+            camera.capture_rotated_image("test_image.jpg",angle=-29)
             
     except KeyboardInterrupt:
         print("用户中断")

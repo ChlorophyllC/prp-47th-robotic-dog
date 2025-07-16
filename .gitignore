@@ -9,3 +9,4 @@ blank.py
 captures/
 trajectory_logs/
 coordinate_mapper.pkl
+temp_.py

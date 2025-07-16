@@ -121,13 +121,43 @@ def batch_convert_to_image_coordinates(
     
     return image_coords
 
+def batch_convert_to_grid_coordinates(
+    image_coords: List[Tuple[float, float]],
+    image_width: int = 1440,
+    image_height: int = 1080,
+    grid_width: int = 144,
+    grid_height: int = 108
+) -> List[Tuple[float, float]]:
+    """
+    批量将图像像素坐标列表转换为网格坐标列表
+    
+    :param image_coords: 图像坐标列表 [(px1, py1), (px2, py2), ...]
+    :param image_width: 图像宽度（像素）
+    :param image_height: 图像高度（像素）
+    :param grid_width: 网格宽度（格子数）
+    :param grid_height: 网格高度（格子数）
+    :return: 网格坐标列表 [(x1, y1), (x2, y2), ...]
+    """
+    cell_width = image_width / grid_width
+    cell_height = image_height / grid_height
+
+    grid_coords = []
+    for pixel_x, pixel_y in image_coords:
+        # 计算网格x坐标（考虑中心点）
+        grid_x = (pixel_x / cell_width) - 0.5
+        # 计算网格y坐标（考虑Y轴反转和中心点）
+        grid_y = ((image_height - pixel_y) / cell_height) - 0.5
+        grid_coords.append((grid_x, grid_y))
+    
+    return grid_coords
+
 def bbox_to_corners(x1, y1, x2, y2):
     """
     将边界框转换为四个角点坐标
     """
     return [[x1, y1], [x1, y2], [x2, y2], [x2, y1]]
 
-def detect_objects(path, show_results=False):
+def detect_objects(path, show_results=False, verbose=True):
     """
     检测图像中的目标并返回原始检测结果（像素坐标）
     
@@ -150,7 +180,7 @@ def detect_objects(path, show_results=False):
         return None
     
     # YOLO检测
-    results = model.predict(frame, imgsz=640, conf=0.5)
+    results = model.predict(frame, imgsz=640, conf=0.6, verbose=verbose)
     
     # 获取图像尺寸
     image_height, image_width = frame.shape[:2]
@@ -192,7 +222,7 @@ def detect_objects(path, show_results=False):
     
     return detection_results, (image_width, image_height)
 
-def save_detection_results(detection_data, save_dir="detection_results"):
+def save_detection_results(detection_data, save_dir="detection_results", verbose=True):
     """
     将检测结果转换为网格坐标并保存为JSON文件
     
@@ -242,15 +272,16 @@ def save_detection_results(detection_data, save_dir="detection_results"):
         f.write("\n".join(items))
         f.write("\n}")
     
-    print(f"检测结果已保存到: {output_file}")
+    if verbose:
+        print(f"检测结果已保存到: {output_file}")
     return output_file
 
-def detect_and_save(path, save_dir="detection_results", show_results=False):
+def detect_and_save(path, save_dir="detection_results", show_results=False, verbose=True):
     """
     检测图像中的目标并输出JSON格式结果
     """
 
-    save_detection_results(detect_objects(path, show_results))
+    save_detection_results(detect_objects(path, show_results,verbose=verbose),verbose=verbose)
 
 if __name__ == "__main__":
     # 测试图片路径

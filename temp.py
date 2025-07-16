@@ -5,63 +5,89 @@ from typing import List, Tuple
 from glob import glob
 import matplotlib
 
-def plot_trajectory(log_file_path: str):
-    """绘制轨迹和误差图"""
+import numpy as np
+import matplotlib.pyplot as plt
+
+def point_to_segment_distance(p, a, b):
+    """计算点p到线段ab的最小距离"""
+    ap = p - a
+    ab = b - a
+    ab_norm_sq = np.dot(ab, ab)
+    if ab_norm_sq == 0:
+        return np.linalg.norm(ap)
+    t = np.clip(np.dot(ap, ab) / ab_norm_sq, 0, 1)
+    projection = a + t * ab
+    return np.linalg.norm(p - projection)
+
+def plot_trajectory(log_file_path: str, label_interval_mm: float = 100):
+    """绘制轨迹和误差图，并在路径上隔一段距离标号"""
     # 读取日志数据
     data = np.genfromtxt(log_file_path, delimiter=',', skip_header=1,
-                        names=['time', 'x', 'y', 'heading', 'target_x', 'target_y', 'target_idx'])
-    
-    # 提取数据
+                         names=['time', 'x', 'y', 'heading', 'target_x', 'target_y', 'target_idx'])
+
+    # 提取实际位置和目标位置
     actual_pos = np.column_stack((data['x'], data['y']))
     target_pos = np.column_stack((data['target_x'], data['target_y']))
-    
+
     # 创建图形
     plt.figure(figsize=(15, 10))
-    
+
     # 子图1: 实际轨迹与理想轨迹
     plt.subplot(2, 1, 1)
     plt.plot(actual_pos[:, 0], actual_pos[:, 1], 'b-', label='实际路径')
     plt.plot(target_pos[:, 0], target_pos[:, 1], 'r--', label='理想路径')
-    
+
     # 标记起点和终点
     plt.scatter(actual_pos[0, 0], actual_pos[0, 1], c='green', s=100, marker='o', label='实际起点')
     plt.scatter(actual_pos[-1, 0], actual_pos[-1, 1], c='blue', s=100, marker='x', label='实际终点')
     plt.scatter(target_pos[0, 0], target_pos[0, 1], c='yellow', s=100, marker='o', label='理想起点')
     plt.scatter(target_pos[-1, 0], target_pos[-1, 1], c='red', s=100, marker='x', label='理想终点')
-    
+
+    # 路径标号：每隔一定距离打上编号
+    distance_accum = 0
+    label_id = 0
+    for i in range(1, len(actual_pos)):
+        step_dist = np.linalg.norm(actual_pos[i] - actual_pos[i - 1])
+        distance_accum += step_dist
+        if distance_accum >= label_interval_mm:
+            mid_x, mid_y = actual_pos[i]
+            plt.text(mid_x + 10, mid_y + 10, str(label_id), fontsize=9, color='black')
+            label_id += 1
+            distance_accum = 0
+
     plt.title('实际路径与理想路径对比')
     plt.xlabel('X坐标(mm)')
     plt.ylabel('Y坐标(mm)')
     plt.legend()
     plt.grid(True)
     plt.axis('equal')
-    
+
     # 子图2: 误差分析
     plt.subplot(2, 1, 2)
-    
-    # 计算每个点到理想路径的距离
     errors = []
-    for i in range(len(actual_pos)):
-        # 找到当前目标点索引对应的理想路径点
-        target_idx = int(data['target_idx'][i])
-        if target_idx >= len(target_pos):
-            target_idx = len(target_pos) - 1
-        errors.append(np.linalg.norm(actual_pos[i] - target_pos[target_idx]))
-    
+    for p in actual_pos:
+        min_dist = float('inf')
+        for i in range(len(target_pos) - 1):
+            a = target_pos[i]
+            b = target_pos[i + 1]
+            dist = point_to_segment_distance(p, a, b)
+            if dist < min_dist:
+                min_dist = dist
+        errors.append(min_dist)
+
     plt.plot(data['time'] - data['time'][0], errors, 'r-', label='路径误差')
     plt.title('路径误差随时间变化')
     plt.xlabel('时间 (s)')
     plt.ylabel('误差 (mm)')
     plt.legend()
     plt.grid(True)
-    
+
     plt.tight_layout()
-    
+
     # 保存图像
     plot_path = log_file_path.replace('.log', '_plot.png')
     plt.savefig(plot_path)
     plt.close()
-    
     print(f"轨迹和误差图已保存到: {plot_path}")
 
 def get_latest_log_file(folder_path: str):
@@ -102,19 +128,19 @@ def send_ctrl(speed, angle,ip,port):
     :param angle: 角速度
     :return:
     """
-    buffer = cvt_ctrl_to_car_ctrl(speed, angle, bias=7)  # 将控制输入转换为小车控制输入
+    buffer = cvt_ctrl_to_car_ctrl(speed, angle, bias=-5)  # 将控制输入转换为小车控制输入
     command = "<%d,%d,%d,%d>" % (int(buffer[0]), int(buffer[1]), int(buffer[2]), int(buffer[3]))
     car_communication.sendto(command.encode(), (ip, port))  # 发送控制指令
             
 def test_straight_line(ip,port):
     speed = 60
     angle = 0
-    for i in range(30):  # 运行 3 秒左右
+    for i in range(10):  # 运行 3 秒左右
         send_ctrl(speed, angle, ip, port)
         time.sleep(0.1)
     send_ctrl(0, 0, ip, port)
 
-ip_1 = '192.168.1.205'
+ip_1 = '192.168.1.207'
 port_1 = int(12345)
 
 ip_2 = '192.168.1.205'
@@ -126,7 +152,7 @@ port_3 = int(12345)
 ip_4 = '192.168.1.208'
 port_4 = int(12345)
 
-# test_straight_line(ip_1, port_1)
+test_straight_line(ip_1, port_1)
 
 # 示例使用
 if __name__ == "__main__":
@@ -134,6 +160,6 @@ if __name__ == "__main__":
     # 1. 获取最新的日志文件
     log_folder = "trajectory_logs"
     latest_log = get_latest_log_file(log_folder)
-
+    log = './trajectory_logs/trajectory_20250713_181350.log'
     # 2. 绘制轨迹图
     plot_trajectory(latest_log)

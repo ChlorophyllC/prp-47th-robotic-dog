@@ -37,7 +37,7 @@ class VehicleControlSystem:
                  car_ips: Optional[Dict[int, str]] = None,
                  car_bias: Optional[Dict[int, float]] = None,
                  car_port: int = 12345,
-                 camera_rotation: int = -21):
+                 camera_rotation: int = -29):
         """
         初始化系统
         
@@ -72,7 +72,6 @@ class VehicleControlSystem:
         self._setup_vehicle_config(vehicle_ids, car_ips, car_bias, car_port)
         
         # 控制参数
-        self.detection_interval = 5.0  # 检测间隔（秒）
         self.camera_rotation = camera_rotation  # 相机旋转角度
         self.mapper_file = "coordinate_mapper.pkl"
         
@@ -86,6 +85,10 @@ class VehicleControlSystem:
         self.main_thread = None
         self._stop_event = threading.Event()
         
+        # 添加检测线程控制
+        self.detection_thread = None
+        self.detection_running = False
+        
         # 控制模块相关
         self.trajectory_planners = {}  # 存储每个小车的轨迹规划器
         self.state_receivers = {}      # 存储每个小车的状态接收器
@@ -95,7 +98,7 @@ class VehicleControlSystem:
                             car_ips: Optional[Dict[int, str]] = None,
                             car_bias: Optional[Dict[int, float]] = None,
                             car_port: int = 12345,
-                            camera_rotation: int = -21):
+                            camera_rotation: int = -29):
         """
         设置车辆配置
         
@@ -107,7 +110,7 @@ class VehicleControlSystem:
         """
         # 设置默认车辆ID
         if vehicle_ids is None:
-            vehicle_ids = [1]
+            vehicle_ids = [0,1,2]
         
         # 生成ROS话题
         self.car_topics = []
@@ -137,7 +140,7 @@ class VehicleControlSystem:
         # 设置小车偏置配置
         if car_bias is None:
             # 默认偏置配置
-            default_bias = [-5, 7, 0]
+            default_bias = [0, 0, 0]
             self.car_bias = {}
             for i, vehicle_id in enumerate(vehicle_ids):
                 if i < len(default_bias):
@@ -478,8 +481,45 @@ class VehicleControlSystem:
 
         optimized.append(path[-1])  # 终点一定保留
 
-        return optimized         
-    
+        return optimized    
+         
+    def _detection_thread_worker(self):
+        """检测线程工作函数"""
+        print("检测线程启动")
+        
+        while self.detection_running and not self._stop_event.is_set():
+            try:
+                # 执行检测和更新
+                self._update_vehicle_positions()
+                
+                # 等待1秒
+                if not self._stop_event.wait(1.0):  # 使用Event的wait方法，支持中断
+                    continue
+                else:
+                    break  # 收到停止信号
+                    
+            except Exception as e:
+                print(f"检测线程异常: {str(e)}")
+                
+        print("检测线程结束")
+
+    # 启动检测线程
+    def _start_detection_thread(self):
+        """启动检测线程"""
+        if self.detection_thread is None or not self.detection_thread.is_alive():
+            self.detection_running = True
+            self.detection_thread = threading.Thread(target=self._detection_thread_worker, daemon=True)
+            self.detection_thread.start()
+            print("检测线程已启动")
+
+    # 停止检测线程
+    def _stop_detection_thread(self):
+        """停止检测线程"""
+        if self.detection_running:
+            self.detection_running = False
+            if self.detection_thread and self.detection_thread.is_alive():
+                self.detection_thread.join(timeout=2)
+            print("检测线程已停止")
     def plan_paths(self, command: str = "") -> bool:
         """路径规划"""
         try:
@@ -542,11 +582,12 @@ class VehicleControlSystem:
                 car_bias = self.car_bias.get(vehicle_id, 0)
                 planner = TrajectoryPlanner(
                     trajectory_points=path,
-                    lookahead_distance=300,
+                    lookahead_distance=80,
                     max_speed=100.0,
-                    min_speed=10.0,
-                    goal_tolerance=80,
+                    min_speed=20.0,
+                    goal_tolerance=30,
                     max_angle_control=60.0,
+                    turn_in_place_threshold=15.0,
                     bias=car_bias,
                     name=f"vehicle_{vehicle_id}"
                 )
@@ -557,7 +598,7 @@ class VehicleControlSystem:
                 self.state_receivers[vehicle_id] = receiver
 
                 # 订阅 ROS 话题
-                topic_index = self.car_id_mapping.get(vehicle_id)
+                topic_index = vehicle_id
                 if topic_index < len(self.car_topics):
                     pose_topic = self.car_topics[topic_index]
                     twist_topic = pose_topic.replace('/pose', '/twist')
@@ -580,14 +621,15 @@ class VehicleControlSystem:
                 self._report_error("没有可执行的路径")
                 return False
             
+            # 启动检测线程
+            self._start_detection_thread()
+            
             rate = rospy.Rate(10)  # 10Hz控制频率
                 
             # 任务执行主循环
             while not self._stop_event.is_set() and not rospy.is_shutdown():
-                # 更新小车位置
-                if not self._update_vehicle_positions():
-                    break
-                    
+                # 移除了 self._update_vehicle_positions() 调用
+                
                 self._execute_trajectory_control()
 
                 # 检查任务完成状态
@@ -596,7 +638,9 @@ class VehicleControlSystem:
                     break
                     
                 rate.sleep()
-                
+            
+            # 停止检测线程
+            self._stop_detection_thread()
             return True
             
         except Exception as e:
@@ -616,6 +660,7 @@ class VehicleControlSystem:
                 
                 try:
                     car_ip = self.car_ips.get(vehicle_id, "192.168.1.207")
+
                     planner.send_control(car_ip, self.car_port)
                 except Exception as e:
                     print(f"小车{vehicle_id}控制发送失败: {str(e)}") 
@@ -650,22 +695,33 @@ class VehicleControlSystem:
             # 4. 路径规划
             if not self.plan_paths(command):
                 return False
-                
-            # 5. 执行任务
-            return self.execute_mission()
+            
+            # 5. 使用 ROS Timer 稍后执行（在主线程）
+            rospy.Timer(rospy.Duration(0.1), self._execute_mission_callback, oneshot=True)
+            
+            return True  # 立即返回 True
             
         except Exception as e:
             self._report_error(f"任务执行异常: {str(e)}")
             return False
+
+    def _execute_mission_callback(self, event):
+        """ROS Timer 回调，执行任务"""
+        try:
+            self.execute_mission()
+        except Exception as e:
+            self._report_error(f"任务执行异常: {str(e)}")
         finally:
             self.running = False
 
     def stop_mission(self):
         """停止任务"""
         self._stop_event.set()
+        self._stop_detection_thread()  # 添加这行
         self.running = False
         if self.main_thread and self.main_thread.is_alive():
             self.main_thread.join(timeout=5)
+
             
     def pause_mission(self):
         """暂停任务"""
@@ -677,6 +733,9 @@ class VehicleControlSystem:
         
     def cleanup(self):
         """清理资源"""
+        # 停止检测线程
+        self._stop_detection_thread()  # 添加这行
+        
         # 停止所有小车
         for vehicle_id in self.car_ips:
             try:
@@ -776,8 +835,8 @@ class VehicleControlSystem:
             self.camera.capture_rotated_image(file_path=image_path, angle=self.camera_rotation)
 
             # 2. YOLO检测
-            results = predict.detect_objects(path=image_path, show_results=False)
-            predict.save_detection_results(results, save_dir="detection_results")
+            results = predict.detect_objects(path=image_path, show_results=False, verbose=False)
+            predict.save_detection_results(results, save_dir="detection_results", verbose=False)
 
             if not results or not results[0]:
                 print("未检测到小车，等待下一次检测...")
@@ -793,7 +852,7 @@ class VehicleControlSystem:
 
             # 4. 映射为实际坐标（图像到实际世界）
             mapped_real_coords = [self.mapper.map_to_real_coords(coord) for coord in vehicle_img_coords]
-            time.sleep(0.3)
+            
             # 5. 获取 ROS 实时坐标
             vehicle_ros_coords = []
             for topic in self.car_topics:
@@ -860,7 +919,7 @@ if __name__ == "__main__":
         # 启动任务
         if system.start_mission("小车0清扫目的地0"):
             print("任务启动成功")
-            
+            rospy.spin()
             # 等待任务完成或用户中断
             while system.running:
                 time.sleep(1)

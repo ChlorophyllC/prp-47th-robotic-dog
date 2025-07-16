@@ -13,7 +13,7 @@ import matplotlib.image as mpimg
 import matplotlib
 from system import VehicleControlSystem
 from camera import HikvisionCamera as Camera
-from predict import batch_convert_to_image_coordinates
+from predict import batch_convert_to_grid_coordinates
 class VehiclePlannerGUI:
     def __init__(self, root):
         self.root = root
@@ -27,26 +27,39 @@ class VehiclePlannerGUI:
         self.grid_destinations = []
         
         # 自动检测标志
-        self.auto_detect_running = False
-        self.detection_thread = None
         self.background = None
-        
-        # 创建界面
-        self.create_widgets()
-        
+
         # 车辆控制系统
         self.vehicle_system = VehicleControlSystem()
         self.setup_system_callbacks()
+
+        # 创建界面
+        self.create_widgets()
+        self.color_palette = [
+        ('#FF6B6B', '#FF8E8E'),  # 珊瑚红
+        ('#4ECDC4', '#88E0D0'),  # 蓝绿色
+        ('#FFBE0B', '#FFD166'),  # 金黄色
+        ('#8338EC', '#9D5BFF'),  # 紫色
+        ('#3A86FF', '#6BA4FF'),  # 亮蓝色
+        ('#FB5607', '#FF7B3D'),  # 橙红色
+        ('#00BB9E', '#00D4B1'),  # 翡翠绿
+        ('#FF006E', '#FF4D97'),  # 玫红色
+        ('#A5DD9B', '#C1E8B7'),  # 薄荷绿
+        ('#7E6B8F', '#9D8DAC')   # 薰衣草紫
+        ]
         
         # 车辆配置参数
         self.vehicle_ids = [1, 2, 3]  # 默认值
         self.car_ips = {0: "192.168.1.208", 1: "192.168.1.205", 2: "192.168.1.207"}  # 默认值
-        self.car_bias = {0: -5, 1: 7, 2: 0}  # 默认值
+        self.car_bias = {0: 0, 1: 0, 2: 0}  # 默认值
         self.car_port = 12345  # 默认值
-        self.camera_rotation = -21
+        self.camera_rotation = -29
+        self.trajectories = {}  # 格式: {vehicle_id: [(x1,y1), (x2,y2), ...]}
         
         # 首次检测标志
         self.first_detection_done = False
+        self.path_planned = False
+        self._monitor_running = False
 
     def create_widgets(self):
         # 创建主框架
@@ -84,19 +97,19 @@ class VehiclePlannerGUI:
         ttk.Label(config_frame, text="Vehicle IDs (逗号分隔):").pack(anchor=tk.W)
         self.vehicle_ids_entry = tk.Entry(config_frame, width=35)
         self.vehicle_ids_entry.pack(fill=tk.X, pady=(0, 5))
-        self.vehicle_ids_entry.insert(0, "1,2,3")
+        self.vehicle_ids_entry.insert(0, "0,1,2")
         
         # Car IPs 输入
         ttk.Label(config_frame, text="Car IPs (格式: id1:ip1,id2:ip2):").pack(anchor=tk.W)
         self.car_ips_entry = tk.Entry(config_frame, width=35)
         self.car_ips_entry.pack(fill=tk.X, pady=(0, 5))
-        self.car_ips_entry.insert(0, "1:192.168.1.208,2:192.168.1.205,3:192.168.1.207")
+        self.car_ips_entry.insert(0, "0:192.168.1.208,1:192.168.1.205,2:192.168.1.207")
         
         # Car Bias 输入
         ttk.Label(config_frame, text="Car Bias (格式: id1:bias1,id2:bias2):").pack(anchor=tk.W)
         self.car_bias_entry = tk.Entry(config_frame, width=35)
         self.car_bias_entry.pack(fill=tk.X, pady=(0, 5))
-        self.car_bias_entry.insert(0, "1:-5,2:7,3:0")
+        self.car_bias_entry.insert(0, "0:0,1:0,2:0")
         
         # Car Port 输入
         ttk.Label(config_frame, text="Car Port:").pack(anchor=tk.W)
@@ -142,7 +155,7 @@ class VehiclePlannerGUI:
         self.command_entry.pack(fill=tk.X, pady=(5, 0))
         
         # 设置默认命令
-        self.command_entry.insert(tk.END, "用车辆0和2包围目的地0。")
+        self.command_entry.insert(tk.END, "用车辆0和2包围目的地0;小车0去往目的地0；小车0清扫目的地0")
         
         # 执行按钮
         ttk.Button(command_frame, text="执行路径规划", 
@@ -217,7 +230,7 @@ class VehiclePlannerGUI:
                 car_port=self.car_port,
                 camera_rotation=self.camera_rotation
             )
-            
+
             messagebox.showinfo("成功", "车辆配置已应用")
             self.update_result_text("车辆配置已更新")
             
@@ -241,6 +254,7 @@ class VehiclePlannerGUI:
                 camera.capture_rotated_image("./captures/test_img.jpg", angle=self.camera_rotation)
             
             self.detect_latest_image()
+            self.update_visualization()
             self.first_detection_done = True
             self.first_detect_btn.config(text="重新检测")
             self.detection_status.config(text="首次检测已完成", foreground="green")
@@ -253,8 +267,26 @@ class VehiclePlannerGUI:
         # 断开连接
             camera.disconnect()
 
-    # 5. 修改 detect_latest_image 方法
-    def detect_latest_image(self):
+    def set_latest_background(self):
+        captures_dir = "./captures"
+        if not os.path.exists(captures_dir):
+            os.makedirs(captures_dir)
+            return
+        
+        # 获取目录中所有图片文件
+        image_files = [f for f in os.listdir(captures_dir) 
+                    if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
+        
+        if not image_files:
+            messagebox.showwarning("警告", "captures目录中没有找到图片文件")
+            return
+        
+        # 按修改时间排序，获取最新的图片
+        image_files.sort(key=lambda x: os.path.getmtime(os.path.join(captures_dir, x)))
+        latest_image = os.path.join(captures_dir, image_files[-1])
+        self.background = mpimg.imread(latest_image)
+
+    def detect_latest_image(self, verbose=True):
         """检测最新的图片"""
         captures_dir = "./captures"
         if not os.path.exists(captures_dir):
@@ -275,7 +307,7 @@ class VehiclePlannerGUI:
         self.background = mpimg.imread(latest_image)
 
         # 使用YOLO进行检测
-        result = predict.detect_objects(latest_image)
+        result = predict.detect_objects(latest_image,verbose=verbose)
         result_json = predict.save_detection_results(result, save_dir='./detection_results')
         
         if result_json:
@@ -283,16 +315,16 @@ class VehiclePlannerGUI:
             
             # 更新UI
             self.update_data_display()
-            self.update_visualization()
             
             # 记录日志
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            log_msg = f"{timestamp} 检测到最新图片: {latest_image}\n"
-            log_msg += f"车辆: {len(self.grid_vehicles)}, 障碍物: {len(self.grid_obstacles)}, 目的地: {len(self.grid_destinations)}\n"
-            log_msg += f"检测到的车辆ID: {list(range(len(self.grid_vehicles)))}\n"
-            log_msg += f"配置的Vehicle IDs: {self.vehicle_ids}\n"
-            self.result_text.insert(tk.END, log_msg + "\n")
-            self.result_text.see(tk.END)
+            if verbose:
+                log_msg = f"{timestamp} 检测到最新图片: {latest_image}\n"
+                log_msg += f"车辆: {len(self.grid_vehicles)}, 障碍物: {len(self.grid_obstacles)}, 目的地: {len(self.grid_destinations)}\n"
+                log_msg += f"检测到的车辆ID: {list(range(len(self.grid_vehicles)))}\n"
+                log_msg += f"配置的Vehicle IDs: {self.vehicle_ids}\n"
+                self.result_text.insert(tk.END, log_msg + "\n")
+                self.result_text.see(tk.END)
     
     def start_mission(self):
         """启动任务"""
@@ -306,12 +338,13 @@ class VehiclePlannerGUI:
             return
         
         try:
+            self.stop_mission_btn.config(state=tk.NORMAL)
             if self.vehicle_system.start_mission(command):
-                self.stop_mission_btn.config(state=tk.NORMAL)
                 self.update_result_text(f"任务启动成功: {command}")
 
-                # 启动一个线程来监听路径结果并更新可视化
-                threading.Thread(target=self.monitor_path_results, daemon=True).start()
+                # 监听路径结果并更新可视化
+                self._monitor_running = True
+                self.monitor_path_results()
             else:
                 self.update_result_text("任务启动失败")
         except Exception as e:
@@ -321,58 +354,204 @@ class VehiclePlannerGUI:
         """停止任务"""
         try:
             self.vehicle_system.cleanup()
+            self.stop_monitoring()
             self.stop_mission_btn.config(state=tk.DISABLED)
+            self.path_planned = False
+            self.vehicle_system.grid_path_results = {}
             self.update_result_text("任务已停止")
         except Exception as e:
             messagebox.showerror("错误", f"停止任务失败: {str(e)}")
     
-    def monitor_path_results(self):
-        """监听系统的路径规划结果并更新可视化"""
-        while self.vehicle_system.running:
-            try:
-                # 检查系统是否有路径结果
-                if hasattr(self.vehicle_system, 'grid_path_results') and self.vehicle_system.grid_path_results:
-                    # 在主线程中更新可视化
-                    self.root.after(0, self.update_path_visualization, self.vehicle_system.path_results, self.vehicle_system.grid_path_results)
-                    break
-            except Exception as e:
-                print(f"监听路径结果出错: {e}")
-            
-            time.sleep(0.5)  # 每0.5秒检查一次
+    def update_trajectory_visualization(self):
+        """更新轨迹可视化"""
+        if not self.trajectories:
+            return
+        
+        # 清除之前的轨迹线但保留其他元素
+        for artist in self.ax.lines + self.ax.collections:
+            if hasattr(artist, '_is_trajectory'):
+                artist.remove()
 
-    def update_path_visualization(self, path_results, grid_path_results):
-        """更新路径可视化"""
+        for i, (vid, traj) in enumerate(self.trajectories.items()):
+            if len(traj) < 2:
+                continue
+                
+            # 循环使用颜色方案
+            color_idx = vid % len(self.color_palette)
+            line_color, point_color = self.color_palette[color_idx]
+            
+            # 绘制轨迹线
+            x_vals = [p[0] for p in traj]
+            y_vals = [p[1] for p in traj]
+            line = self.ax.plot(x_vals, y_vals, 
+                            color=line_color,
+                            linestyle='-',
+                            linewidth=3,
+                            alpha=0.8,
+                            marker='', 
+                            label=f'车辆{vid}轨迹')[0]
+            line._is_trajectory = True
+            
+            # 绘制当前位置点
+            last_point = traj[-1]
+            point = self.ax.scatter([last_point[0]], [last_point[1]],
+                                color=point_color,
+                                s=120,
+                                edgecolors='white',
+                                linewidths=1.5,
+                                zorder=10,
+                                alpha=0.9)
+            point._is_trajectory = True
+            
+            # 添加车辆ID标签
+            text = self.ax.text(last_point[0], 
+                            last_point[1]+1.8,  # 稍微抬高一点
+                            f'🚗 {vid}',  # 添加小车emoji
+                            color='white',
+                            fontsize=11,
+                            fontweight='bold',
+                            ha='center',
+                            va='center',
+                            bbox=dict(facecolor=line_color,
+                                    alpha=0.7,
+                                    boxstyle='round,pad=0.3',
+                                    edgecolor='white'))
+            text._is_trajectory = True
+            
+            # 在起点添加特殊标记
+            if len(traj) > 5:  # 确保有足够长的轨迹
+                start_point = traj[0]
+                self.ax.scatter([start_point[0]], [start_point[1]],
+                            color=line_color,
+                            s=80,
+                            marker='*',
+                            edgecolors='gold',
+                            linewidths=1,
+                            zorder=9)
+        
+        # 添加图例（只在第一次或轨迹变化时更新）
+        if not hasattr(self, '_traj_legend') or not self._traj_legend.get_visible():
+            self._traj_legend = self.ax.legend(
+                loc='upper right',
+                fontsize=9,
+                framealpha=0.7,
+                title='轨迹说明',
+                title_fontsize=10,
+                borderpad=1
+            )
+            self._traj_legend.set_visible(True)
+        
+        # 重绘画布
+        self.canvas.draw()
+                
+    def monitor_path_results(self):
+        """持续监听系统的路径规划结果"""
+        if not hasattr(self, '_monitor_running'):
+            self._monitor_running = True  # 监控运行标志
+        
+        def check_results():
+            if not (self._monitor_running and self.vehicle_system.running):
+                return
+                
+            try:
+                # 批量获取需要的数据，减少属性访问次数
+                system_data = {
+                    'running': self.vehicle_system.running,
+                    'path_results': getattr(self.vehicle_system, 'path_results', None),
+                    'grid_path_results': getattr(self.vehicle_system, 'grid_path_results', None)
+                }
+                
+                # 在主线程中更新UI
+                self.root.after(0, lambda: self._update_ui_with_results(system_data))
+                
+            except Exception as e:
+                self.root.after(0, lambda: self.update_result_text(f"监控错误: {str(e)}"))
+            
+            # 使用after循环而非递归
+            if self._monitor_running:
+                self._monitor_id = self.root.after(500, check_results)  # 统一500ms间隔
+        
+        # 启动监控
+        check_results()
+
+    def _update_ui_with_results(self, system_data):
+        """在主线程中安全更新UI"""
         try:
-            # 清除之前的绘图
-            self.ax.clear()
-            self.detect_latest_image()
+            # 1. 更新基础可视化
+            self.load_json_file('./detection_results/detection_results.json')
             self.update_visualization()
             
-            # 绘制路径
-            if grid_path_results:
-                self.draw_path_on_ax(grid_path_results)
-                result_text = "路径规划完成：\n" + "\n".join(str(res) for res in path_results)
-                self.result_text.insert(tk.END, result_text + "\n")
-            
-            for vid in self.vehicle_ids:
-                traj = self.vehicle_system.get_actual_trajectory(vid)
-                if not traj:
-                    continue
+            # 2. 如果有新路径结果，更新路径可视化
+            if system_data['grid_path_results']:
+                self.update_path_visualization(
+                    system_data['path_results'],
+                    system_data['grid_path_results'],
+                    planned=self.path_planned
+                )
+                self.path_planned = True
 
-                # 映射世界坐标 → 图像 → 网格（假设有 mapper）
-                if hasattr(self.vehicle_system, "mapper") and self.vehicle_system.mapper.is_initialized:
-                    img_points = self.vehicle_system.mapper.batch_map_to_real_coords(traj)
-                    grid_points = batch_convert_to_image_coordinates(img_points)
-
-                    x_vals = [p[0] for p in grid_points]
-                    y_vals = [p[1] for p in grid_points]
-
-                    self.ax.plot(x_vals, y_vals, color='blue', alpha=0.8, linewidth=2, label=f'车辆{vid}实际轨迹')
-
-            self.canvas.draw()
-            
+            # 3. 更新实时轨迹
+            self.update_real_time_trajectories()
+            print("可视化已更新")
         except Exception as e:
-            self.update_result_text(f"可视化更新失败: {str(e)}") 
+            self.update_result_text(f"UI更新失败: {str(e)}")
+
+    def stop_monitoring(self):
+        """停止监控"""
+        if hasattr(self, '_monitor_running'):
+            self._monitor_running = False
+        if hasattr(self, '_monitor_id'):
+            self.root.after_cancel(self._monitor_id)
+
+    def update_path_visualization(self, path_results, grid_path_results, planned=False):
+            """更新路径可视化"""
+            try:
+                # self.detect_latest_image(verbose=False)
+
+                # 绘制路径
+                if grid_path_results:
+                    self.draw_path_on_ax(grid_path_results)
+                    if not planned:
+                        result_text = "路径规划完成：\n" + "\n".join(str(res) for res in grid_path_results)
+                        self.result_text.insert(tk.END, result_text + "\n")
+                    self.canvas.draw()
+                
+            except Exception as e:
+                self.update_result_text(f"可视化更新失败: {str(e)}") 
+
+    def update_real_time_trajectories(self):
+        """更新实时轨迹显示"""
+        if not hasattr(self, 'vehicle_system') or not self.vehicle_system.running:
+            return
+        
+        # 获取所有车辆的实时轨迹
+        trajectories_updated = False
+        for vid in self.vehicle_ids:
+            traj = self.vehicle_system.get_actual_trajectory(vid)
+
+            if traj:
+                # 每5个点取一个点
+                traj = traj[::5]
+                # 转换坐标到图像坐标系
+                if hasattr(self.vehicle_system, "mapper") and self.vehicle_system.mapper.is_initialized:
+                    img_points = self.vehicle_system.mapper.batch_map_to_image_coords(traj)
+                    grid_points = batch_convert_to_grid_coordinates(img_points)
+                    traj = grid_points     
+
+                # 更新轨迹数据
+                if vid not in self.trajectories:
+                    self.trajectories[vid] = []
+                
+                # 只保留最近N个点以避免内存问题
+                MAX_POINTS = 100
+                self.trajectories[vid].extend(traj)
+                if len(self.trajectories[vid]) > MAX_POINTS:
+                    self.trajectories[vid] = self.trajectories[vid][-MAX_POINTS:]
+
+                trajectories_updated = True
+        
+        if trajectories_updated:
+            self.root.after(0, self.update_trajectory_visualization)
 
     def load_json_file(self, file_path=None):
         """加载JSON文件"""
@@ -437,9 +616,10 @@ class VehiclePlannerGUI:
         """更新可视化图形"""
         self.ax.clear()
         # 绘制背景图片（如果有）
+        self.set_latest_background()
         if hasattr(self, 'background') and self.background is not None:
             self.ax.imshow(self.background, extent=[0, 144, 0, 108], alpha=0.7, zorder=0)
-            
+        
         if not self.grid_vehicles and not self.grid_obstacles and not self.grid_destinations:
             self.ax.text(0.5, 0.5, "请导入JSON文件", 
                         ha='center', va='center', transform=self.ax.transAxes)
@@ -613,4 +793,4 @@ if __name__ == "__main__":
     main()
 
 # export ROS_MASTER_URI=http://192.168.1.214:11311
-# roslaunch vrpn_client_ros sample.launch server:=192.168.0.2
+# roslaunch vrpn_client_ros sample.launch server:=192.168.1.100

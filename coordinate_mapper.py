@@ -14,6 +14,7 @@ class CoordinateMapper:
     
     def __init__(self):
         self.transform_matrix = None
+        self.inverse_transform_matrix = None
         self.is_initialized = False
     
     def initialize_transform(self, 
@@ -102,6 +103,29 @@ class CoordinateMapper:
         
         return [(point[0], point[1]) for point in real_points]
     
+    def batch_map_to_image_coords(self, real_coords: List[Tuple[float, float]]) -> List[Tuple[float, float]]:
+        """
+        批量将现实坐标映射回图片坐标
+        
+        Args:
+            real_coords: 现实坐标列表 [(X1, Y1), (X2, Y2), ...]
+            
+        Returns:
+            List[Tuple[float, float]]: 图片坐标列表 [(x1, y1), (x2, y2), ...]
+        """
+        if not self.is_initialized:
+            raise RuntimeError("坐标映射器尚未初始化，请先调用 initialize_transform")
+        
+        # 计算逆变换矩阵（如果尚未计算）
+        if not hasattr(self, 'inverse_transform_matrix'):
+            self.inverse_transform_matrix = np.linalg.inv(self.transform_matrix)
+        
+        # 批量处理以提高效率
+        real_points = np.array([[x, y, 1] for x, y in real_coords])
+        img_points = real_points @ self.inverse_transform_matrix
+
+        return [(point[0], point[1]) for point in img_points]
+
     def get_transform_info(self) -> Optional[np.ndarray]:
         """
         获取变换矩阵信息
@@ -209,6 +233,9 @@ class CoordinateMapper:
             mapper.transform_matrix = mapper_data['transform_matrix']
             mapper.is_initialized = True
             
+            if mapper.is_initialized:
+                mapper.inverse_transform_matrix = np.linalg.inv(mapper.transform_matrix)
+                
             print(f"坐标映射器已从文件加载: {filepath}")
             return mapper
             
@@ -234,8 +261,10 @@ if __name__ == "__main__":
     
     # 创建坐标映射器
     mapper = CoordinateMapper()
-    mapper.initialize_transform(vehicle_img_coords, vehicle_real_coords)
-    mapper.detect_vehicle(path='./captures/init_mapping.jpg',show_results=True)
+    mapper = mapper.load_mapper('coordinate_mapper.pkl')
+    print(mapper.transform_matrix)
+    # mapper.initialize_transform(vehicle_img_coords, vehicle_real_coords)
+    # mapper.detect_vehicle(path='./captures/init_mapping.jpg',show_results=True)
     # 测试映射
     test_img_point = (250, 250)
     real_point = mapper.map_to_real_coords(test_img_point)

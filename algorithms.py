@@ -131,7 +131,7 @@ class PathPlanner:
 
         all_obstacles = self.get_all_obstacles(current_vehicle_index, destination_index)
 
-        def is_collision(point: Tuple[int, int], buffer: float = 10.0) -> bool:
+        def is_collision(point: Tuple[int, int], buffer: float = 6.0) -> bool:
             for obs in all_obstacles:
                 if self.point_to_rect_distance(point, obs) < buffer:
                     return True
@@ -435,10 +435,12 @@ class PathPlanner:
 
             return path
 
-        path += generate_zigzag_path(start=closest_corner, dest=target_destination, vehicle=current_vehicle)
-
+        zigzag = generate_zigzag_path(start=closest_corner, dest=target_destination, vehicle=current_vehicle)
+        full_path = path + zigzag
+        dense_path = self.interpolate_path(full_path, spacing=1.0)
+        
         # 返回字典格式，键为车辆索引，值为该车辆的路径
-        return {current_vehicle_index: path}
+        return {current_vehicle_index: dense_path}
     
     def expulsion_algorithm(self, direction: str, destination_index: int, vehicle_indices: List[int] = None,
                           min_distance: float = 3.0, buffer: float = 1.0) -> List[Tuple[float, float]]:
@@ -506,6 +508,26 @@ class PathPlanner:
         }[direction]
         
         return [(x+dx, y+dy) for x,y in destination_rect]
+
+    @staticmethod
+    def interpolate_path(path: List[Tuple[float, float]], spacing: float = 1.0) -> List[Tuple[float, float]]:
+        """对路径中的点进行插值，生成等间距的点"""
+        if not path:
+            return []
+
+        interpolated = []
+        for i in range(len(path) - 1):
+            x0, y0 = path[i]
+            x1, y1 = path[i + 1]
+            dx = x1 - x0
+            dy = y1 - y0
+            dist = math.hypot(dx, dy)
+            steps = max(1, int(dist / spacing))
+            for j in range(steps):
+                t = j / steps
+                interpolated.append((x0 + dx * t, y0 + dy * t))
+        interpolated.append(path[-1])  # 最后一个点补上
+        return interpolated
 
     def encirclement_implement(self, destination_index: int, selected_vehicle_indices: List[int]) -> Dict[int, List[Tuple[float, float]]]:
         """
