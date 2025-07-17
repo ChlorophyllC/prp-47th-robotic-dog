@@ -492,8 +492,8 @@ class VehicleControlSystem:
                 # 执行检测和更新
                 self._update_vehicle_positions()
                 
-                # 等待1秒
-                if not self._stop_event.wait(1.0):  # 使用Event的wait方法，支持中断
+                # 等待0.5秒
+                if not self._stop_event.wait(0.5):  # 使用Event的wait方法，支持中断
                     continue
                 else:
                     break  # 收到停止信号

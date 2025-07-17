@@ -11,19 +11,6 @@ import numpy as np
 plt.rcParams['font.sans-serif'] = ['SimHei']
 plt.rcParams['axes.unicode_minus'] = False
 
-import tkinter as tk
-from tkinter import messagebox, filedialog
-import json
-from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
-from matplotlib.figure import Figure
-import matplotlib.patches as patches
-import matplotlib.pyplot as plt
-import numpy as np
-
-# 设置中文字体
-plt.rcParams['font.sans-serif'] = ['SimHei']
-plt.rcParams['axes.unicode_minus'] = False
-
 class JSONGeneratorApp:
     def __init__(self, root):
         self.root = root
@@ -39,6 +26,10 @@ class JSONGeneratorApp:
         # 当前编辑模式
         self.current_mode = "vehicle"  # vehicle, obstacle, destination
         self.current_points = []
+        
+        # 网格尺寸
+        self.grid_width = 144
+        self.grid_height = 108
         
         # 创建 GUI 布局
         self.create_widgets()
@@ -81,7 +72,7 @@ class JSONGeneratorApp:
         plot_frame.pack(side=tk.RIGHT, expand=True, fill=tk.BOTH)
         
         # 创建 Matplotlib 图形
-        self.fig = Figure(figsize=(8, 8), dpi=100)
+        self.fig = Figure(figsize=(10, 7.5), dpi=100)  # 调整图形大小以适应144x108的比例
         self.ax = self.fig.add_subplot(111)
         
         # 将图形嵌入 Tkinter
@@ -94,11 +85,16 @@ class JSONGeneratorApp:
     
     def setup_plot(self):
         self.ax.clear()
-        self.ax.set_xlim(0, 20)
-        self.ax.set_ylim(0, 20)
+        self.ax.set_xlim(0, self.grid_width)
+        self.ax.set_ylim(0, self.grid_height)
         self.ax.grid(True, which='both', linestyle='--', linewidth=0.5)
-        self.ax.set_xticks(np.arange(0, 21, 1))
-        self.ax.set_yticks(np.arange(0, 21, 1))
+        
+        # 设置刻度 - 主刻度每12单位，次刻度每1单位
+        self.ax.set_xticks(np.arange(0, self.grid_width + 1, 12))
+        self.ax.set_yticks(np.arange(0, self.grid_height + 1, 12))
+        self.ax.set_xticks(np.arange(0, self.grid_width + 1, 1), minor=True)
+        self.ax.set_yticks(np.arange(0, self.grid_height + 1, 1), minor=True)
+        
         self.ax.set_title("点击添加点 (4个点自动生成四边形)")
         
         # 绘制已有元素

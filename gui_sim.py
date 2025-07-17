@@ -4,6 +4,7 @@ import draw
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, scrolledtext
 import json
+import matplotlib
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.patches import Rectangle
@@ -12,6 +13,7 @@ import numpy as np
 class VehiclePlannerGUI:
     def __init__(self, root):
         self.root = root
+        matplotlib.rcParams['font.family'] = 'WenQuanYi Micro Hei'
         self.root.title("车辆路径规划系统")
         self.root.geometry("1200x800")
         # 数据存储

@@ -14,6 +14,7 @@ import matplotlib
 from system import VehicleControlSystem
 from camera import HikvisionCamera as Camera
 from predict import batch_convert_to_grid_coordinates
+import cv2
 class VehiclePlannerGUI:
     def __init__(self, root):
         self.root = root
@@ -38,7 +39,6 @@ class VehiclePlannerGUI:
         self.color_palette = [
         ('#FF6B6B', '#FF8E8E'),  # 珊瑚红
         ('#4ECDC4', '#88E0D0'),  # 蓝绿色
-        ('#FFBE0B', '#FFD166'),  # 金黄色
         ('#8338EC', '#9D5BFF'),  # 紫色
         ('#3A86FF', '#6BA4FF'),  # 亮蓝色
         ('#FB5607', '#FF7B3D'),  # 橙红色
@@ -267,7 +267,7 @@ class VehiclePlannerGUI:
         # 断开连接
             camera.disconnect()
 
-    def set_latest_background(self):
+    def set_background(self):
         captures_dir = "./captures"
         if not os.path.exists(captures_dir):
             os.makedirs(captures_dir)
@@ -281,10 +281,18 @@ class VehiclePlannerGUI:
             messagebox.showwarning("警告", "captures目录中没有找到图片文件")
             return
         
-        # 按修改时间排序，获取最新的图片
+        # 按修改时间排序
         image_files.sort(key=lambda x: os.path.getmtime(os.path.join(captures_dir, x)))
-        latest_image = os.path.join(captures_dir, image_files[-1])
-        self.background = mpimg.imread(latest_image)
+        
+        try:
+            selected_image = os.path.join(captures_dir, image_files[-1])
+            img = cv2.imread(selected_image)
+            img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+            self.background = cv2.resize(img, (720, 540), 
+                            interpolation=cv2.INTER_NEAREST)
+        except Exception as e:
+            messagebox.showerror("错误", f"无法读取图片文件: {str(e)}")
+            self.background = None
 
     def detect_latest_image(self, verbose=True):
         """检测最新的图片"""
@@ -366,16 +374,18 @@ class VehiclePlannerGUI:
         """更新轨迹可视化"""
         if not self.trajectories:
             return
-        
-        # 清除之前的轨迹线但保留其他元素
-        for artist in self.ax.lines + self.ax.collections:
-            if hasattr(artist, '_is_trajectory'):
-                artist.remove()
 
         for i, (vid, traj) in enumerate(self.trajectories.items()):
             if len(traj) < 2:
                 continue
-                
+            clean_traj = []
+            prev_point = None
+            for point in traj:
+                if point != prev_point:
+                    clean_traj.append(point)
+                    prev_point = point
+            traj = clean_traj
+
             # 循环使用颜色方案
             color_idx = vid % len(self.color_palette)
             line_color, point_color = self.color_palette[color_idx]
@@ -389,6 +399,7 @@ class VehiclePlannerGUI:
                             linewidth=3,
                             alpha=0.8,
                             marker='', 
+                            zorder=15,
                             label=f'车辆{vid}轨迹')[0]
             line._is_trajectory = True
             
@@ -399,7 +410,7 @@ class VehiclePlannerGUI:
                                 s=120,
                                 edgecolors='white',
                                 linewidths=1.5,
-                                zorder=10,
+                                zorder=20,
                                 alpha=0.9)
             point._is_trajectory = True
             
@@ -412,6 +423,7 @@ class VehiclePlannerGUI:
                             fontweight='bold',
                             ha='center',
                             va='center',
+                            zorder=21,
                             bbox=dict(facecolor=line_color,
                                     alpha=0.7,
                                     boxstyle='round,pad=0.3',
@@ -442,7 +454,7 @@ class VehiclePlannerGUI:
             self._traj_legend.set_visible(True)
         
         # 重绘画布
-        self.canvas.draw()
+        self.canvas.draw_idle()
                 
     def monitor_path_results(self):
         """持续监听系统的路径规划结果"""
@@ -469,7 +481,7 @@ class VehiclePlannerGUI:
             
             # 使用after循环而非递归
             if self._monitor_running:
-                self._monitor_id = self.root.after(500, check_results)  # 统一500ms间隔
+                self._monitor_id = self.root.after(1000, check_results)  # 统一500ms间隔
         
         # 启动监控
         check_results()
@@ -491,7 +503,7 @@ class VehiclePlannerGUI:
                 self.path_planned = True
 
             # 3. 更新实时轨迹
-            self.update_real_time_trajectories()
+            # self.update_real_time_trajectories()
             print("可视化已更新")
         except Exception as e:
             self.update_result_text(f"UI更新失败: {str(e)}")
@@ -514,7 +526,7 @@ class VehiclePlannerGUI:
                     if not planned:
                         result_text = "路径规划完成：\n" + "\n".join(str(res) for res in grid_path_results)
                         self.result_text.insert(tk.END, result_text + "\n")
-                    self.canvas.draw()
+                    self.canvas.draw_idle()
                 
             except Exception as e:
                 self.update_result_text(f"可视化更新失败: {str(e)}") 
@@ -616,33 +628,15 @@ class VehiclePlannerGUI:
         """更新可视化图形"""
         self.ax.clear()
         # 绘制背景图片（如果有）
-        self.set_latest_background()
+        self.set_background()
         if hasattr(self, 'background') and self.background is not None:
             self.ax.imshow(self.background, extent=[0, 144, 0, 108], alpha=0.7, zorder=0)
         
         if not self.grid_vehicles and not self.grid_obstacles and not self.grid_destinations:
             self.ax.text(0.5, 0.5, "请导入JSON文件", 
                         ha='center', va='center', transform=self.ax.transAxes)
-            self.canvas.draw()
+            self.canvas.draw_idle()
             return
-        
-        # 绘制车辆（蓝色矩形）
-        for i, vehicle in enumerate(self.grid_vehicles):
-            if len(vehicle) >= 4:
-                x_min = min(point[0] for point in vehicle)
-                y_min = min(point[1] for point in vehicle)
-                width = max(point[0] for point in vehicle) - x_min
-                height = max(point[1] for point in vehicle) - y_min
-                
-                rect = Rectangle((x_min, y_min), width, height, 
-                               facecolor='lightblue', edgecolor='blue', linewidth=2)
-                self.ax.add_patch(rect)
-                
-                # 添加车辆标签
-                center_x = x_min + width / 2
-                center_y = y_min + height / 2
-                self.ax.text(center_x, center_y, f'V{i}', 
-                           ha='center', va='center', fontweight='bold')
         
         # 绘制障碍物（红色矩形）
         for i, obstacle in enumerate(self.grid_obstacles):
@@ -653,14 +647,14 @@ class VehiclePlannerGUI:
                 height = max(point[1] for point in obstacle) - y_min
                 
                 rect = Rectangle((x_min, y_min), width, height, 
-                               facecolor='lightcoral', edgecolor='red', linewidth=2)
+                               facecolor='lightcoral', edgecolor='red', linewidth=2,zorder=5)
                 self.ax.add_patch(rect)
                 
                 # 添加障碍物标签
                 center_x = x_min + width / 2
                 center_y = y_min + height / 2
                 self.ax.text(center_x, center_y, f'O{i}', 
-                           ha='center', va='center', fontweight='bold')
+                           ha='center', va='center', fontweight='bold',zorder=6)
         
         # 绘制目的地（绿色矩形）
         for i, dest in enumerate(self.grid_destinations):
@@ -671,14 +665,32 @@ class VehiclePlannerGUI:
                 height = max(point[1] for point in dest) - y_min
                 
                 rect = Rectangle((x_min, y_min), width, height, 
-                               facecolor='lightgreen', edgecolor='green', linewidth=2)
+                               facecolor='lightgreen', edgecolor='green', linewidth=2,zorder=5)
                 self.ax.add_patch(rect)
                 
                 # 添加目的地标签
                 center_x = x_min + width / 2
                 center_y = y_min + height / 2
                 self.ax.text(center_x, center_y, f'D{i}', 
-                           ha='center', va='center', fontweight='bold')
+                           ha='center', va='center', fontweight='bold',zorder=6)
+                
+        # 绘制车辆（蓝色矩形）
+        for i, vehicle in enumerate(self.grid_vehicles):
+            if len(vehicle) >= 4:
+                x_min = min(point[0] for point in vehicle)
+                y_min = min(point[1] for point in vehicle)
+                width = max(point[0] for point in vehicle) - x_min
+                height = max(point[1] for point in vehicle) - y_min
+                
+                rect = Rectangle((x_min, y_min), width, height, 
+                               facecolor='lightblue', edgecolor='blue', linewidth=2,zorder=5)
+                self.ax.add_patch(rect)
+                
+                # 添加车辆标签
+                center_x = x_min + width / 2
+                center_y = y_min + height / 2
+                self.ax.text(center_x, center_y, f'V{i}', 
+                           ha='center', va='center', fontweight='bold',zorder=6)
         
         # 设置图形属性
         self.ax.set_xlim(0, 144)
@@ -697,7 +709,7 @@ class VehiclePlannerGUI:
         ]
         self.ax.legend(handles=legend_elements, loc='upper right')
         
-        self.canvas.draw()
+        self.canvas.draw_idle()
 
     def draw_path_on_ax(self, path_list):
         """将路径绘制到已有的 self.ax 上
@@ -726,24 +738,24 @@ class VehiclePlannerGUI:
 
             # 绘制路径线
             self.ax.plot(path_x, path_y, color='orange', linewidth=2, linestyle='--',
-                        label='规划路径', marker='o', markersize=4, alpha=0.8)
+                        label='规划路径', marker='o', zorder=8, markersize=4, alpha=0.8)
 
             # 标注路径点序号
             for i, (x, y) in enumerate(path):
                 self.ax.annotate(f'{i+1}', (x, y), xytext=(5, 5), textcoords='offset points',
-                                fontsize=8, color='red', weight='bold',
+                                fontsize=8, color='red', weight='bold',zorder=9,
                                 bbox=dict(boxstyle='round,pad=0.2', facecolor='white', alpha=0.8))
 
             # 起点和终点标记
             start_point = path[0]
             end_point = path[-1]
-            self.ax.plot(start_point[0], start_point[1], 'go', markersize=12, label='起点')
-            self.ax.plot(end_point[0], end_point[1], 'ro', markersize=12, label='终点')
+            self.ax.plot(start_point[0], start_point[1], 'go', markersize=12, label='起点',zorder=10)
+            self.ax.plot(end_point[0], end_point[1], 'ro', markersize=12, label='终点',zorder=10)
 
             # 添加车辆编号标签
             if vehicle_index is not None:
                 self.ax.text(start_point[0], start_point[1] + 1.0, f'车辆{vehicle_index}',
-                            fontsize=9, color='black', fontweight='bold',
+                            fontsize=9, color='black', fontweight='bold',zorder=11,
                             bbox=dict(boxstyle='round,pad=0.2', facecolor='yellow', alpha=0.6))
 
     def execute_planning(self):
