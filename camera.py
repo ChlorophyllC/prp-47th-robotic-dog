@@ -297,6 +297,72 @@ class HikvisionCamera:
         else:
             print(f"获取图像失败! ret[0x{ret:x}]")
             return False
+
+    def get_frame(self, timeout: int = 1000, angle: float = 0.0):
+        """从相机获取一帧并返回 OpenCV BGR 图像（numpy.ndarray）。
+
+        - 不写入磁盘，避免频繁读写导致卡顿/竞态
+        - 内部沿用 SaveImageEx2 输出 JPEG，再用 cv2.imdecode 解码
+        """
+        if not self.is_connected:
+            print("相机未连接!")
+            return None
+
+        if not self.is_grabbing:
+            if not self.start_grabbing():
+                return None
+
+        st_frame_info = MV_FRAME_OUT_INFO_EX()
+        memset(byref(st_frame_info), 0, sizeof(st_frame_info))
+        data_buf = (c_ubyte * self.payload_size)()
+
+        ret = self.cam.MV_CC_GetOneFrameTimeout(byref(data_buf), self.payload_size, st_frame_info, int(timeout))
+        if ret != 0:
+            print(f"获取图像失败! ret[0x{ret:x}]")
+            return None
+
+        # 转成 JPEG buffer
+        jpg_buf_size = int(st_frame_info.nWidth * st_frame_info.nHeight * 3)
+        st_convert_param = MV_SAVE_IMAGE_PARAM_EX()
+        st_convert_param.nWidth = st_frame_info.nWidth
+        st_convert_param.nHeight = st_frame_info.nHeight
+        st_convert_param.pData = data_buf
+        st_convert_param.nDataLen = st_frame_info.nFrameLen
+        st_convert_param.enPixelType = st_frame_info.enPixelType
+        st_convert_param.nImageLen = st_convert_param.nDataLen
+        st_convert_param.nJpgQuality = 70
+        st_convert_param.enImageType = MV_Image_Jpeg
+        st_convert_param.pImageBuffer = (c_ubyte * jpg_buf_size)()
+        st_convert_param.nBufferSize = jpg_buf_size
+
+        ret = self.cam.MV_CC_SaveImageEx2(st_convert_param)
+        if ret != 0:
+            print(f"转换像素失败! ret[0x{ret:x}]")
+            return None
+
+        try:
+            buffer_ptr = cast(st_convert_param.pImageBuffer, POINTER(c_ubyte * st_convert_param.nImageLen))
+            jpg_bytes = bytes(buffer_ptr.contents)
+            arr = np.frombuffer(jpg_bytes, dtype=np.uint8)
+            frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+        except Exception as e:
+            print(f"解码图像失败: {e}")
+            return None
+
+        if frame is None:
+            return None
+
+        try:
+            ang = float(angle)
+        except Exception:
+            ang = 0.0
+        if ang:
+            try:
+                frame = self.rotate_image(frame, ang)
+            except Exception:
+                pass
+
+        return frame
     
     def capture_rotated_image(self, file_path=None, angle=0, timeout=1000):
         """

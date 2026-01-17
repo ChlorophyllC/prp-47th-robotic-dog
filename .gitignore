@@ -4,7 +4,7 @@ best.pt
 test_image.jpg
 detection_results/
 MvSdkLog/
-_pycache_/
+__pycache__/
 blank.py
 captures/
 trajectory_logs/

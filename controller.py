@@ -59,6 +59,7 @@ class TrajectoryPlanner:
                  goal_tolerance: float = 30,
                  max_angle_control: float = 50.0,
                  turn_in_place_threshold: float = 10.0,
+                 turn_exit_threshold: float = None,
                  prediction_horizon: float = 0.2,
                  bias=0,
                  name=None):
@@ -66,9 +67,18 @@ class TrajectoryPlanner:
         self.lookahead_distance = lookahead_distance
         self.max_speed = max_speed
         self.min_speed = min_speed
+        # 记录基准限速，便于执行期避障临时降速/恢复
+        self.base_max_speed = float(max_speed)
+        self.base_min_speed = float(min_speed)
         self.goal_tolerance = goal_tolerance
         self.max_angle_control = max_angle_control
         self.turn_in_place_threshold = turn_in_place_threshold
+        # 退出“原地转向”的阈值（滞回）：默认比进入阈值更小，避免在阈值附近频繁抖动切换
+        self.turn_exit_threshold = (
+            turn_exit_threshold
+            if turn_exit_threshold is not None
+            else max(2.0, self.turn_in_place_threshold * 0.4)
+        )
         self.prediction_horizon = prediction_horizon
         self.bias = bias
         self.name = name
@@ -93,10 +103,24 @@ class TrajectoryPlanner:
             upper=self.max_angle_control,
             lower=-self.max_angle_control
         )
-        
-        self.min_angle_control = 30.0
+
+        # 最小角速度：在“原地转向”时自适应提升，解决“太小不动/太大过冲”的经验问题
+        self.min_angle_control_base = 25.0
+        self.min_angle_control_dynamic = self.min_angle_control_base
+        self.min_angle_control_step = 5.0
+        self.min_angle_control_check_interval = 0.2  # s
+        self.min_angle_control_heading_delta_threshold_deg = 4.0  # 该时间窗内小于此变化，认为“没怎么转起来”
+        self._turn_heading_ref = None
+        self._turn_heading_ref_time = time.time()
+
         self.last_speed = 0.0
         self.last_angle = 0.0
+
+        # 控制模式：turn=原地对准方向；drive=前进并允许小角速度修正
+        self.control_mode = "turn"
+        self.last_angle_error_deg = None
+        self.angle_improve_epsilon_deg = 0.5  # 认为“确实在改善”的最小幅度
+        self.small_angle_deadband_deg = 1.0   # 非必要不抖动，进入死区直接给0角速度
 
         # ==================== 新增：卡住检测相关参数 ====================
         self.stuck_velocity_threshold = 0.01  # (米/秒) 判断车辆静止的速度阈值
@@ -105,6 +129,84 @@ class TrajectoryPlanner:
         self.stuck_start_time = 0.0           # 开始自救的时间戳
         self.stuck_check_timer = time.time()  # 用于检测是否卡住的计时器
         # ============================================================
+
+    def update_trajectory(self, trajectory_points: List[Tuple[float, float]], reset_pid: bool = True) -> None:
+        """运行期替换轨迹点（用于实时避障重规划）。
+
+        - 不重建 planner/ROS 订阅
+        - 重置目标索引与完成标志
+        """
+        if not trajectory_points or len(trajectory_points) < 2:
+            return
+
+        self.trajectory_points = self.interpolate_path(trajectory_points, spacing=20)
+        self.current_target_idx = 0
+        self.is_finished = False
+        self.control_mode = "turn"
+        self.last_angle_error_deg = None
+
+        # 避免 PID 在轨迹突变时瞬间输出过大
+        if reset_pid:
+            try:
+                self.angle_pid.reset()
+            except Exception:
+                pass
+
+    def set_max_speed(self, max_speed: float) -> None:
+        try:
+            self.max_speed = float(max_speed)
+        except Exception:
+            pass
+
+    def restore_speed_limits(self) -> None:
+        """恢复到初始化时的限速设置。"""
+        try:
+            self.max_speed = float(self.base_max_speed)
+            self.min_speed = float(self.base_min_speed)
+        except Exception:
+            pass
+    def _reset_turn_min_angle(self):
+        self.min_angle_control_dynamic = self.min_angle_control_base
+        self._turn_heading_ref = self.current_heading
+        self._turn_heading_ref_time = time.time()
+
+    def _update_turn_min_angle(self, commanded_angle: float):
+        """在原地转向模式下，根据动捕朝向变化自适应调整最小角速度。"""
+        if abs(commanded_angle) < 1e-6:
+            return
+
+        now = time.time()
+        if self._turn_heading_ref is None:
+            self._turn_heading_ref = self.current_heading
+            self._turn_heading_ref_time = now
+            return
+
+        dt = now - self._turn_heading_ref_time
+        if dt < self.min_angle_control_check_interval:
+            return
+
+        heading_delta = abs(self.normalize_angle(self.current_heading - self._turn_heading_ref))
+        heading_delta_deg = math.degrees(heading_delta)
+
+        if heading_delta_deg < self.min_angle_control_heading_delta_threshold_deg:
+            # 转得太少：逐步抬高最小角速度（直到上限）
+            self.min_angle_control_dynamic = min(
+                self.max_angle_control,
+                self.min_angle_control_dynamic + self.min_angle_control_step,
+            )
+            print(
+                f"🧭 转向不足：{heading_delta_deg:.2f}°/{dt:.2f}s，"
+                f"min_angle_control {self.min_angle_control_dynamic - self.min_angle_control_step:.1f}→{self.min_angle_control_dynamic:.1f}"
+            )
+        else:
+            # 转起来了：缓慢回落，避免一直保持很大最小角速度导致过冲
+            self.min_angle_control_dynamic = max(
+                self.min_angle_control_base,
+                self.min_angle_control_dynamic - self.min_angle_control_step,
+            )
+
+        self._turn_heading_ref = self.current_heading
+        self._turn_heading_ref_time = now
 
     def update_position(self, x: float, y: float, heading: float):
         self.current_pos = np.array([x, y])
@@ -231,30 +333,63 @@ class TrajectoryPlanner:
         angle_error = -self.normalize_angle(target_angle - predicted_heading)
         angle_error_deg = math.degrees(angle_error)
 
-        # --- 5. 核心控制逻辑：【新】严格的“先转向，再直行” ---
+        # --- 5. 核心控制逻辑：带滞回的“转向/前进”状态机 + 直行时保留小角速度修正 ---
         speed = 0.0
         angle = 0.0
 
-        if abs(angle_error_deg) > self.turn_in_place_threshold:
-            # 角度误差过大，执行原地转向
-            print("🔄 模式: 原地转向 (速度=0)")
-            speed = 0.0 # 速度严格为0
-            angle = self.angle_pid.cal_output(angle_error) # 仅用PID计算角速度
+        # 角度是否在改善（用于你提的“如果角度在改善，就让它继续改善”）
+        if self.last_angle_error_deg is None:
+            angle_is_improving = True
         else:
-            # 角度误差在容忍范围内，执行纯直行
-            print("➡️  模式: 纯直行 (角速度=0)")
-            # a. 速度控制：计算前进速度
-            speed = self._calculate_adaptive_speed(target_distance, angle_error)
-            # b. 角速度控制：严格设置为0
-            angle = 0.0
-            # c. 重置PID：为下一次可能的转向做准备，防止积分项累积
-            self.angle_pid.reset()
+            angle_is_improving = (
+                abs(angle_error_deg) < abs(self.last_angle_error_deg) - self.angle_improve_epsilon_deg
+            )
+        self.last_angle_error_deg = angle_error_deg
+
+        # 状态切换（滞回）
+        if self.control_mode == "turn":
+            # 只有当误差足够小，才允许退出原地转向
+            if abs(angle_error_deg) <= self.turn_exit_threshold:
+                self.control_mode = "drive"
+                # 切换瞬间重置PID，避免上一段原地旋转的积分/微分带到前进里
+                self.angle_pid.reset()
+                self._reset_turn_min_angle()
+        else:  # drive
+            # 误差重新变大时，回到原地转向
+            if abs(angle_error_deg) >= self.turn_in_place_threshold:
+                self.control_mode = "turn"
+                self.angle_pid.reset()
+                self._reset_turn_min_angle()
+
+        if self.control_mode == "turn":
+            print("🔄 模式: 原地转向 (速度=0)")
+            speed = 0.0
+            angle = self.angle_pid.cal_output(angle_error)
+            # 根据动捕反馈自适应提升/回落最小角速度
+            self._update_turn_min_angle(angle)
+        else:
+            # 前进时也允许“继续改善角度”，而不是角速度直接置0
+            # 但在死区内直接置0，避免小误差导致抖动
+            print(f"➡️  模式: 前进修正 (角度改善={angle_is_improving})")
+
+            base_speed = self._calculate_adaptive_speed(target_distance, angle_error)
+            # 根据角度误差衰减速度：误差越大越慢（但不至于卡死）
+            speed_scale = 1.0 - min(abs(angle_error_deg) / max(self.turn_in_place_threshold, 1e-6), 0.9)
+            speed = base_speed * max(0.2, speed_scale)
+
+            if abs(angle_error_deg) <= self.small_angle_deadband_deg:
+                angle = 0.0
+            else:
+                # 持续用PID把角度往0收敛（你希望的“让它改善就继续改善”）
+                angle = self.angle_pid.cal_output(angle_error)
 
         # --- 6. 应用电机物理限制 ---
         if speed > 0.1:
             speed = np.clip(speed, self.min_speed, self.max_speed)
-        if 0 < abs(angle) < self.min_angle_control:
-            angle = self.min_angle_control * np.sign(angle)
+
+        # 最小角速度限制只在“原地转向”时启用；前进修正允许小角速度，否则会抖动/过冲
+        if self.control_mode == "turn" and 0 < abs(angle) < self.min_angle_control_dynamic:
+            angle = self.min_angle_control_dynamic * np.sign(angle)
         
         speed = np.clip(speed, 0, self.max_speed)
         angle = np.clip(angle, -self.max_angle_control, self.max_angle_control)
@@ -359,10 +494,10 @@ class StateReceiver:
             return self.current_pos.copy(), self.current_heading, self.current_twist
             
 if __name__ == "__main__":
-    ip_7 = "192.168.1.208"
+    ip_7 = "192.168.1.229"
     port = int(12345)
     
-    trajectory = [(100,100),(1100,100),(1100,1100),(100,1100),(100,100)]
+    trajectory = [(600,600),(1200,600),(1200,1200),(600,1200),(600,600)]
     
     planner = TrajectoryPlanner(
         trajectory_points=trajectory,
@@ -371,15 +506,15 @@ if __name__ == "__main__":
         min_speed=20.0,
         goal_tolerance=30,
         max_angle_control=60.0,
-        turn_in_place_threshold=15, # 建议将阈值调小，如5度，以便更精确地对准方向后再直行
+        turn_in_place_threshold=10, # 建议将阈值调小，如5度，以便更精确地对准方向后再直行
         prediction_horizon=0.15,
         bias = 0
     )
     
     receiver = StateReceiver()
     rospy.init_node("trajectory_follower", anonymous=True)
-    rospy.Subscriber("/vrpn_client_node/vehicle_1/pose", PoseStamped, receiver.pose_callback, queue_size=1)
-    rospy.Subscriber("/vrpn_client_node/vehicle_1/twist", TwistStamped, receiver.twist_callback, queue_size=1)
+    rospy.Subscriber("/vrpn_client_node/vehicle_2/pose", PoseStamped, receiver.pose_callback, queue_size=1)
+    rospy.Subscriber("/vrpn_client_node/vehicle_2/twist", TwistStamped, receiver.twist_callback, queue_size=1)
 
     rate = rospy.Rate(10)
     print("🚗 正在开始轨迹跟踪 (模式: Turn-then-Drive)...")
@@ -411,3 +546,6 @@ if __name__ == "__main__":
         car_communication = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         send_ctrl(0, 0, ip_7, port, car_communication)
         print("❌ ROS 终止或控制中断，已发送停止指令。")
+
+# export ROS_MASTER_URI=http://10.1.1.100:11311
+# roslaunch vrpn_client_ros sample.launch server:=10.1.1.198

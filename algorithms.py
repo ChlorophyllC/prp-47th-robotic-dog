@@ -145,8 +145,58 @@ class PathPlanner:
         vehicle_height = int(max(p[1] for p in current_vehicle) - min(p[1] for p in current_vehicle))
         vehicle_max_size = max(vehicle_width, vehicle_height)
 
+        # 原始起点（车辆中心，四舍五入为整数坐标）
         start = tuple(map(int, map(round, self.get_rect_center(current_vehicle))))
         goal = tuple(map(int, map(round, dest_point))) if dest_point else tuple(map(int, map(round, self.get_rect_center(self.destinations[destination_index]))))
+
+        # 如果起点过近或与障碍重叠，则在起点周围进行小范围搜索，寻找最近的可用起点
+        try:
+            dest_center = tuple(map(float, goal))
+        except Exception:
+            dest_center = self.get_rect_center(self.destinations[destination_index]) if destination_index is not None else (0.0, 0.0)
+
+        # 先构造当前车辆的中心（精确）和用于平移的矩形
+        vehicle_center = self.get_rect_center(current_vehicle)
+
+        def shifted_rect_at(center_pt):
+            dx = center_pt[0] - vehicle_center[0]
+            dy = center_pt[1] - vehicle_center[1]
+            return [(p[0] + dx, p[1] + dy) for p in current_vehicle]
+
+        # 检查起点是否存在碰撞或过近（包含矩形重叠或点距小于阈值）
+        start_rect = shifted_rect_at(start)
+        start_invalid = False
+        for obs in all_obstacles:
+            if self.rects_overlap(start_rect, obs) or self.point_to_rect_distance(start, obs) < vehicle_max_size:
+                start_invalid = True
+                break
+
+        if start_invalid:
+            found = False
+            max_radius = 12  # 最大搜索半径（单位：坐标系）
+            step = 1.0
+            angle_step_deg = 20
+            for r in [i * step for i in range(1, int(max_radius / step) + 1)]:
+                for ang_deg in range(0, 360, angle_step_deg):
+                    ang = math.radians(ang_deg)
+                    cand = (start[0] + r * math.cos(ang), start[1] + r * math.sin(ang))
+                    cand_rect = shifted_rect_at(cand)
+                    # 使用更严格的 buffer：车辆最大尺寸
+                    safe = True
+                    for obs in all_obstacles:
+                        if self.rects_overlap(cand_rect, obs) or self.point_to_rect_distance(cand, obs) < vehicle_max_size:
+                            safe = False
+                            break
+                    # 同时确保不离目的地太近（不过这里设置为0，避免误判）
+                    if safe and self.is_valid_position(cand, cand_rect, dest_center, 0.0, 1.0, current_vehicle_index, destination_index):
+                        start = tuple(map(int, map(round, cand)))
+                        found = True
+                        break
+                if found:
+                    print(f"Info: start too close to obstacle, shifted start to {start}")
+                    break
+            if not found:
+                print("Warning: couldn't find nearby collision-free start; using original start")
 
         min_x, max_x = 0, 144
         min_y, max_y = 0, 108
@@ -185,7 +235,7 @@ class PathPlanner:
                     continue
                 if neighbor in closed_set:
                     continue
-                if is_collision(neighbor, vehicle_max_size):
+                if is_collision(neighbor, vehicle_max_size//2):
                     continue
 
                 step_cost = math.hypot(dx, dy)
@@ -555,9 +605,9 @@ class PathPlanner:
     
 # 初始化
 if __name__ == "__main__":
-    vehicles=[[[47, 83], [47, 76], [53, 76], [53, 83]], [[47, 45], [47, 39], [53, 39], [53, 45]], [[68, 24], [68, 18], [73, 18], [73, 24]]]
-    obstacles=[[[34,34],[34,13],[49,13],[49,34]]]
-    destinations=[[[59,63],[59,40],[76,40],[76,63]]]
+    vehicles=[[[112,75],[112,69],[118,69],[118,75]],[[128,36],[128,29],[135,29],[135,36]],[[92,103],[92,97],[98,97],[98,103]]]
+    obstacles=[[[58,70],[58,9],[102,9],[102,70]],[[63,82],[63,66],[74,66],[74,82]]]
+    destinations=[[[26,86],[26,63],[43,63],[43,86]]]
 
     planner = PathPlanner(vehicles, obstacles, destinations)
 

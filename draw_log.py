@@ -28,6 +28,19 @@ class TrajectoryGUI:
         
         # 设置中文字体
         matplotlib.rcParams['axes.unicode_minus'] = False
+        # 绑定窗口关闭事件
+        self.root.protocol("WM_DELETE_WINDOW", self.on_close)
+
+    def on_close(self):
+        # 停止动画（如有）
+        if hasattr(self, 'animation_active'):
+            self.animation_active = False
+        # 退出主循环并销毁窗口
+        try:
+            self.root.quit()
+        except Exception:
+            pass
+        self.root.destroy()
         
     def create_widgets(self):
         # 主框架

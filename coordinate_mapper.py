@@ -16,6 +16,8 @@ class CoordinateMapper:
         self.transform_matrix = None
         self.inverse_transform_matrix = None
         self.is_initialized = False
+        # 可选元信息（例如 camera_rotation），用于校验映射文件是否仍适用
+        self.meta = {}
     
     def initialize_transform(self, 
                            image_coords: List[Tuple[float, float]], 
@@ -55,6 +57,9 @@ class CoordinateMapper:
             # 计算变换矩阵: T = inv(img_matrix) * real_matrix
             img_matrix_inv = np.linalg.inv(img_matrix)
             self.transform_matrix = img_matrix_inv @ real_matrix
+
+            # 同步计算逆矩阵，供反向映射使用
+            self.inverse_transform_matrix = np.linalg.inv(self.transform_matrix)
             
             self.is_initialized = True
             return True
@@ -117,7 +122,7 @@ class CoordinateMapper:
             raise RuntimeError("坐标映射器尚未初始化，请先调用 initialize_transform")
         
         # 计算逆变换矩阵（如果尚未计算）
-        if not hasattr(self, 'inverse_transform_matrix'):
+        if self.inverse_transform_matrix is None:
             self.inverse_transform_matrix = np.linalg.inv(self.transform_matrix)
         
         # 批量处理以提高效率
@@ -197,7 +202,8 @@ class CoordinateMapper:
         try:
             mapper_data = {
                 'transform_matrix': self.transform_matrix,
-                'is_initialized': self.is_initialized
+                'is_initialized': self.is_initialized,
+                'meta': getattr(self, 'meta', {}) or {}
             }
             
             with open(filepath, 'wb') as f:
@@ -231,7 +237,8 @@ class CoordinateMapper:
             
             mapper = cls()
             mapper.transform_matrix = mapper_data['transform_matrix']
-            mapper.is_initialized = True
+            mapper.is_initialized = bool(mapper_data.get('is_initialized', True))
+            mapper.meta = mapper_data.get('meta', {}) or {}
             
             if mapper.is_initialized:
                 mapper.inverse_transform_matrix = np.linalg.inv(mapper.transform_matrix)

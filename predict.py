@@ -1,4 +1,13 @@
-from ultralytics import YOLO
+"""YOLO 检测模块。
+
+注意：为了让 GUI 在未安装 ultralytics 的环境也能启动，本模块对 ultralytics 采用懒加载。
+只有在真正调用 detect_objects*/load_model 时才要求依赖存在。
+"""
+
+try:
+    from ultralytics import YOLO  # type: ignore
+except Exception:  # pragma: no cover
+    YOLO = None
 import os
 import cv2
 import numpy as np
@@ -8,11 +17,22 @@ import time
 # 获取当前文件的目录路径
 path = os.path.dirname(os.path.abspath(__file__))
 
-# 加载训练好的模型
-model = YOLO('best.pt')
+_MODEL = None
 
+
+def load_model(weights_path: str = 'best.pt'):
+    global _MODEL
+    if _MODEL is not None:
+        return _MODEL
+    if YOLO is None:
+        raise ModuleNotFoundError(
+            "未安装 ultralytics，无法进行YOLO检测。请安装: pip install ultralytics"
+        )
+    _MODEL = YOLO(weights_path)
+    return _MODEL
+model = load_model('best.pt')
 # 指定测试图片文件夹
-class_names = ['Yellow', 'Red', 'Green', 'Blue', 'Vehicle', 'Ball']
+class_names = ['Yellow', 'Red', 'Green', 'Blue', 'Vehicle', 'Ball', 'Dog']
 
 def draw_boxes(image, results, class_names):
     """
@@ -29,7 +49,8 @@ def draw_boxes(image, results, class_names):
         (0, 255, 0),    # Green
         (255, 0, 0),    # Blue
         (255, 255, 0),  # Vehicle
-        (0, 165, 255)   # Ball (橙色)
+        (0, 165, 255),   # Ball (橙色)
+        (203, 192, 255)   # Dog (粉色)
     ]
     
     for result in results:
@@ -157,7 +178,51 @@ def bbox_to_corners(x1, y1, x2, y2):
     """
     return [[x1, y1], [x1, y2], [x2, y2], [x2, y1]]
 
-def detect_objects(path, show_results=False, verbose=True):
+def detect_objects_from_frame(frame, show_results=False, verbose=True, imgsz=640, conf=0.6):
+    """对内存中的 BGR 图像做检测。
+
+    Args:
+        frame: OpenCV BGR ndarray
+    Returns:
+        (detection_results, (image_width, image_height))
+    """
+    if frame is None:
+        return None
+
+    # YOLO检测
+    results = model.predict(frame, imgsz=imgsz, conf=conf, verbose=verbose)
+    image_height, image_width = frame.shape[:2]
+
+    detection_results = {
+        "all_vehicles": [],
+        "obstacle": [],
+        "destination": [],
+    }
+
+    for result in results:
+        boxes = result.boxes.cpu().numpy()
+        for box in boxes:
+            x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
+            cls_id = int(box.cls[0].item())
+            conf_score = float(box.conf[0].item())
+
+            class_name = class_names[cls_id]
+            bbox = (x1, y1, x2, y2)
+            if class_name == 'Red' or class_name == 'Dog':
+                detection_results["obstacle"].append(bbox)
+            elif class_name == 'Green':
+                detection_results["destination"].append(bbox)
+            elif class_name == 'Vehicle':
+                detection_results["all_vehicles"].append(bbox)
+
+    if show_results:
+        annotated_frame = draw_boxes(frame.copy(), results, class_names)
+        cv2.imshow("YOLOv11 Detection", annotated_frame)
+        cv2.waitKey(1)
+
+    return detection_results, (image_width, image_height)
+
+def detect_objects_from_path(path, show_results=False, verbose=True):
     """
     检测图像中的目标并返回原始检测结果（像素坐标）
     
@@ -204,7 +269,7 @@ def detect_objects(path, show_results=False, verbose=True):
             # 根据类别分类
             class_name = class_names[cls_id]
             bbox = (x1, y1, x2, y2)
-            if class_name == 'Red':
+            if class_name == 'Red' or class_name == 'Dog':
                 detection_results["obstacle"].append(bbox)
             elif class_name == 'Green':
                 detection_results["destination"].append(bbox)
@@ -221,6 +286,30 @@ def detect_objects(path, show_results=False, verbose=True):
         cv2.destroyAllWindows()
     
     return detection_results, (image_width, image_height)
+
+def detect_objects(path, show_results=False, verbose=True):
+    """
+    检测图像中的目标并返回原始检测结果（像素坐标）
+    
+    参数:
+        path: 图像路径
+        show_results: 是否显示检测结果图像
+    
+    返回:
+        tuple: (检测结果字典, 图像尺寸), 字典格式为:
+        {
+            "all_vehicles": [bboxes...],
+            "obstacle": [bboxes...],
+            "destination": [bboxes...]
+        }
+        其中bboxes是(x1,y1,x2,y2)像素坐标
+    """
+    frame = cv2.imread(path)
+    if frame is None:
+        print(f"无法读取图像: {path}")
+        return None
+
+    return detect_objects_from_frame(frame, show_results=show_results, verbose=verbose)
 
 def save_detection_results(detection_data, save_dir="detection_results", verbose=True):
     """
@@ -285,7 +374,7 @@ def detect_and_save(path, save_dir="detection_results", show_results=False, verb
 
 if __name__ == "__main__":
     # 测试图片路径
-    test_image_path = os.path.join(path, './captures/init_mapping.jpg')
+    test_image_path = os.path.join(path, './captures/test.png')
     
     # 检测并保存结果
     detect_and_save(test_image_path, show_results=True)
