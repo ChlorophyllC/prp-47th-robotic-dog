@@ -1432,7 +1432,7 @@ class VehicleControlSystem:
             obj = algorithms.PathPlanner(self.grid_vehicles, self.grid_obstacles, self.grid_destinations)
 
             # 调用LLM (可选)
-            function_list = test.call_LLM(self.grid_vehicles, self.grid_destinations, command)
+            function_list = test.call_LLM(len(self.grid_vehicles), len(self.grid_destinations), command)
             if function_list is None:
                 self._report_error("LLM调用失败")
                 return False
@@ -2263,4 +2263,5 @@ if __name__ == "__main__":
         print("用户中断")
         
     finally:
+
         system.cleanup()
