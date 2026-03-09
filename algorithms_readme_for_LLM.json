@@ -1,0 +1,73 @@
+[
+  {
+    "type": "function",
+    "function": {
+      "name": "a_star_path_planning",
+      "description": "为指定的小车从当前位置运动到选定目的地规划路径。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "current_vehicle_index": {
+            "type": "int",
+            "description": "小车的索引。"
+          },
+          "destination_index": {
+            "type": "int",
+            "description": "目的地的索引。"
+          }
+        },
+        "required": ["current_vehicle_index","destination_index"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "encirclement_implement",
+      "description": "用指定的一组小车包围选定的目的地。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "destination_index": {
+            "type": "int",
+            "description": "选定目的地的索引。"
+          },
+          "selected_vehicle_indices": {
+            "type": "list",
+            "description": "参与包围的车辆索引列表。例如，[0, 1, 2]表示指定小车0、小车1和小车2参与包围。"
+          },
+          "min_distance": {
+            "type": "float",
+            "description": "规定车辆完成包围时与目的地的最小距离。"
+          },
+          "buffer": {
+            "type": "float",
+            "description": "安全缓冲区，避免发送碰撞。值为小车与障碍物应保持的最小距离。"
+          }
+        },
+        "required": ["destination_index","selected_vehicle_indices"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "sweep",
+      "description": "用指定的小车实现对选定目的地的 Z 字形清扫。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "current_vehicle_index": {
+            "type": "int",
+            "description": "小车的索引。"
+          },
+          "destination_index": {
+            "type": "int",
+            "description": "目的地的索引。"
+          }
+        },
+        "required": ["current_vehicle_index","destination_index"]
+      }
+    }
+  }
+]
