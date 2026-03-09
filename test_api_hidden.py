@@ -1,14 +1,14 @@
 from openai import OpenAI
-from typing import List,Tuple
+from typing import List
 import os
-import ast
+import json
 import algorithms
 import certifi
 # 设置环境变量指向正确的证书文件
 os.environ['SSL_CERT_FILE'] = certifi.where()
 
-def call_LLM(vehicles:List[List[Tuple[float, float]]],
-             destinations:List[List[Tuple[float, float]]],
+def call_LLM(vehicle_num:int,
+             destination_num:int,
              command:str):
     """
     调用大模型理解指令、规划任务
@@ -24,40 +24,36 @@ def call_LLM(vehicles:List[List[Tuple[float, float]]],
     # 初始化OpenAI客户端
     client = OpenAI(
         # 如果没有配置环境变量，请用阿里云百炼API Key替换：api_key="sk-xxx"
-        api_key = "",
+        api_key = os.getenv("YOUR_API_KEY"),
         base_url="https://dashscope.aliyuncs.com/compatible-mode/v1"
     )
 
-    explain_path = "algorithms_readme_for_LLM.md"
+    explain_path = "algorithms_readme_for_LLM.json"
     with open(explain_path, "r",encoding="utf-8") as f:
-        code_explain = f.read()
-
-    vehicle_data="小车初始位置为："
-    destination_data="目的地位置为："
-    index=0
-    for vehicle in vehicles:
-        vehicle_data=vehicle_data+"小车"+str(index)+"："+str(vehicle)+","
-        index+=1
-
-    index=0
-    for destination in destinations:
-        destination_data=destination_data+"目的地"+str(index)+"："+str(destination)+","
-        index+=1
+        tools = json.load(f)
 
     # 创建聊天完成请求
     completion = client.chat.completions.create(
-        model="qwen-turbo-latest", 
+        model="qwen3.5-plus", 
         messages=[
-            {"role": "user", "content": f"现在有以下函数声明，利用这些函数完成给定任务：\n```python\n{code_explain}\n```"},
-            {"role": "user", "content": "初始参数：" + vehicle_data + destination_data},
-            {"role": "user", "content": "命令："+command},
-            {"role": "user", "content": "利用所给函数完成任务，按顺序依次输出调用函数，不需要补充函数体，也不要进行解释。"}
+            {"role": "user", "content": f"利用外部工具完成给定任务。"},
+            {"role": "user", "content": f"现有{vehicle_num}辆小车和{destination_num}个目的地，小车索引为0到{vehicle_num-1}，目的地索引为0到{destination_num-1}。"},
+            {"role": "user", "content": "命令："+command}
         ],
+        tools=tools,
+        extra_body={"enable_thinking": False}
     )
-    if completion.choices[0] is not None:
-        function_list=ast.literal_eval(completion.choices[0].message.content)
+    
+    response = completion.choices[0].message
+    if response.tool_calls is None:
+        return None
+    else:
+        function_list = []
+        for tool_call in response.tool_calls:
+            function_name = tool_call.function.name
+            arguments = json.loads(tool_call.function.arguments)
+            function_list.append({"name": function_name, "arguments": arguments})
         return function_list
-    return None
 
 def Interpret_function_list(function_list:List, obj):
     """
@@ -68,21 +64,23 @@ def Interpret_function_list(function_list:List, obj):
         obj: 包含待调用方法的对象
     """
     results = []
-    for fun in function_list:
+    for func in function_list:
+        func_name = func["name"]
+        arguments = func["arguments"]
         try:
-            # 构造方法调用字符串并执行
-            method_call = f"obj.{fun}"
-            result = eval(method_call)
-            
+            call = getattr(obj,func_name)
+            result = call(**arguments)
+
             # 确保每个结果都是字典形式
             if not isinstance(result, dict):
                 result = {"result": result}
-                
+
             results.append(result)
-        except Exception as e:
+
+        except AttributeError:
             # 如果调用失败，记录错误信息
-            results.append({"error": str(e), "failed_function": fun})
-    
+            results.append({"error": "function not found", "failed_function": func})
+
     return results
 
 if __name__=="__main__":
@@ -103,7 +101,9 @@ if __name__=="__main__":
     ]
     command="让车辆0，1包围目的地1,再让车辆0到达目的地0"
     obj=algorithms.PathPlanner(vehicles,obstacles,destinations)
-    function_list=call_LLM(vehicles,destinations,command)
+
+    function_list=call_LLM(len(vehicles),len(destinations),command)
+
     if function_list is None:
         print("Error: LLM failed!")
     else:
